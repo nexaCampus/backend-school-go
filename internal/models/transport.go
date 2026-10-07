@@ -2,10 +2,14 @@ package models
 
 // TransportStop represents a scheduled bus stop along a school bus route.
 type TransportStop struct {
-	Name string  `json:"name"`
-	Time string  `json:"time"`
-	Lat  float64 `json:"lat"`
-	Lng  float64 `json:"lng"`
+	ID         string  `json:"id,omitempty"`
+	StopName   string  `json:"stop_name,omitempty"`
+	Name       string  `json:"name,omitempty"`
+	Time       string  `json:"time,omitempty"`
+	PickupTime string  `json:"pickup_time,omitempty"`
+	DropTime   string  `json:"drop_time,omitempty"`
+	Lat        float64 `json:"lat"`
+	Lng        float64 `json:"lng"`
 }
 
 // TransportRoute represents a school bus route with driver and GPS tracking info.
