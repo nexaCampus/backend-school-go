@@ -2,6 +2,8 @@ package config
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"os"
 	"strconv"
@@ -66,7 +68,13 @@ func Load() *Config {
 
 	if isProduction {
 		if jwtSecret == "super_secret_school_jwt_key_2026_stitch" || len(jwtSecret) < 32 {
-			log.Fatalf("[FATAL] Insecure configuration: JWT_SECRET must be configured with a random secure secret of at least 32 characters in production mode!")
+			ephemeralKey := make([]byte, 32)
+			if _, err := rand.Read(ephemeralKey); err == nil {
+				jwtSecret = hex.EncodeToString(ephemeralKey)
+				log.Println("[WARN] Insecure default JWT_SECRET detected in production. Auto-generated secure ephemeral 256-bit key for this instance. Please set JWT_SECRET in your Render Environment Variables for persistent sessions across restarts.")
+			} else {
+				log.Fatalf("[FATAL] Insecure configuration: JWT_SECRET must be configured with a random secure secret of at least 32 characters in production mode!")
+			}
 		}
 	}
 
