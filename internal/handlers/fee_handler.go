@@ -1,18 +1,28 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type FeeHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewFeeHandler(pool *pgxpool.Pool) *FeeHandler {
-	return &FeeHandler{pool: pool}
+func NewFeeHandler(pool *pgxpool.Pool, c ...cache.Cache) *FeeHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &FeeHandler{pool: pool, cache: cc}
 }
 
 // GetFees computes fee breakdown, pending dues, and settled payment history.
@@ -20,8 +30,23 @@ func NewFeeHandler(pool *pgxpool.Pool) *FeeHandler {
 func (h *FeeHandler) GetFees(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's fees")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
+	}
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("fees:summary:%s", studentID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedSummary, ok := val.(models.FeeSummary); ok {
+				respondJSON(w, http.StatusOK, cachedSummary)
+				return
+			}
+		}
 	}
 
 	// 1. Query fee items
@@ -74,13 +99,18 @@ func (h *FeeHandler) GetFees(w http.ResponseWriter, r *http.Request) {
 	}
 
 	summary := models.FeeSummary{
-		StudentID:  studentID,
-		TotalDue:   totalDue,
-		TotalPaid:  totalPaid,
-		DueDate:    "Oct 30, 2026",
-		Currency:   "INR",
-		Items:      items,
-		History:    history,
+		StudentID: studentID,
+		TotalDue:  totalDue,
+		TotalPaid: totalPaid,
+		DueDate:   "Oct 30, 2026",
+		Currency:  "INR",
+		Items:     items,
+		History:   history,
+	}
+
+	// Cache fee summary for 5 minutes
+	if h.cache != nil {
+		h.cache.Set(cacheKey, summary, 5*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, summary)

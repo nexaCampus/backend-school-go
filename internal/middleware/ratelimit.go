@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -46,11 +47,18 @@ func NewRateLimiter(rate, burst float64) *RateLimiter {
 	return rl
 }
 
+// NewStrictRateLimiter creates a strict rate limiter suited for brute-force prevention
+// on login, authentication, and payment verification endpoints (e.g. max 5 reqs per minute).
+func NewStrictRateLimiter(requestsPerMinute, burst float64) *RateLimiter {
+	ratePerSec := requestsPerMinute / 60.0
+	return NewRateLimiter(ratePerSec, burst)
+}
+
 // Middleware creates an HTTP middleware handler.
 func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := getClientIP(r)
+			ip := GetClientIP(r)
 
 			rl.mu.Lock()
 			now := time.Now()
@@ -76,7 +84,8 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 
 			if b.tokens < 1 {
 				rl.mu.Unlock()
-				http.Error(w, `{"success":false,"error":"too_many_requests"}`, http.StatusTooManyRequests)
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, `{"success":false,"error":"too_many_requests_rate_limit_exceeded"}`, http.StatusTooManyRequests)
 				return
 			}
 
@@ -87,13 +96,35 @@ func (rl *RateLimiter) Middleware() func(http.Handler) http.Handler {
 	}
 }
 
-func getClientIP(r *http.Request) string {
+// GetClientIP extracts a clean client IP without port number.
+func GetClientIP(r *http.Request) string {
+	// 1. If X-Real-IP is present and valid, prioritize it
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		if host, _, err := net.SplitHostPort(xrip); err == nil {
+			return host
+		}
+		if net.ParseIP(xrip) != nil {
+			return xrip
+		}
+	}
+
+	// 2. Check X-Forwarded-For right-most or first valid IP
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+		for i := len(parts) - 1; i >= 0; i-- {
+			candidate := strings.TrimSpace(parts[i])
+			if host, _, err := net.SplitHostPort(candidate); err == nil {
+				return host
+			}
+			if net.ParseIP(candidate) != nil {
+				return candidate
+			}
+		}
 	}
-	if xrip := r.Header.Get("X-Real-IP"); xrip != "" {
-		return strings.TrimSpace(xrip)
+
+	// 3. Fallback to RemoteAddr
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }

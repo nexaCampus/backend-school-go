@@ -17,7 +17,9 @@ func RequireRoles(roles ...string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims := GetUserClaims(r.Context())
 			if claims == nil || (!allowed[claims.Role] && claims.Role != "superadmin" && claims.Role != "admin") {
-				http.Error(w, `{"success":false,"error":"forbidden_insufficient_permissions"}`, http.StatusForbidden)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"success":false,"error":"forbidden_insufficient_permissions"}`))
 				return
 			}
 			next.ServeHTTP(w, r)
@@ -37,7 +39,9 @@ func RequireStudentAccess(paramKey string) func(http.Handler) http.Handler {
 
 			if targetID != "" && claims != nil {
 				if !claims.HasStudentAccess(targetID) {
-					http.Error(w, `{"success":false,"error":"forbidden_student_idor_violation"}`, http.StatusForbidden)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"success":false,"error":"forbidden_student_idor_violation"}`))
 					return
 				}
 			}

@@ -9,15 +9,24 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
+	"github.com/nexaCampus/backend-school-go/internal/security"
 )
 
 type AttendanceHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewAttendanceHandler(pool *pgxpool.Pool) *AttendanceHandler {
-	return &AttendanceHandler{pool: pool}
+func NewAttendanceHandler(pool *pgxpool.Pool, c ...cache.Cache) *AttendanceHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &AttendanceHandler{pool: pool, cache: cc}
 }
 
 // GetMonthlyAttendance fetches daily attendance calendar and summary metrics for a given month/year.
@@ -25,6 +34,10 @@ func NewAttendanceHandler(pool *pgxpool.Pool) *AttendanceHandler {
 func (h *AttendanceHandler) GetMonthlyAttendance(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's attendance")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
 	}
@@ -41,6 +54,17 @@ func (h *AttendanceHandler) GetMonthlyAttendance(w http.ResponseWriter, r *http.
 	if yStr := r.URL.Query().Get("year"); yStr != "" {
 		if y, err := strconv.Atoi(yStr); err == nil && y >= 2000 {
 			year = y
+		}
+	}
+
+	// Check local cache
+	cacheKey := fmt.Sprintf("attendance:monthly:%s:%d:%d", studentID, month, year)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedResp, ok := val.(models.AttendanceMonthResponse); ok {
+				respondJSON(w, http.StatusOK, cachedResp)
+				return
+			}
 		}
 	}
 
@@ -117,7 +141,7 @@ func (h *AttendanceHandler) GetMonthlyAttendance(w http.ResponseWriter, r *http.
 		pct = (float64(presentDays) / float64(totalMarked)) * 100.0
 	}
 
-	respondJSON(w, http.StatusOK, models.AttendanceMonthResponse{
+	monthResp := models.AttendanceMonthResponse{
 		StudentID:     studentID,
 		Month:         month,
 		Year:          year,
@@ -127,7 +151,13 @@ func (h *AttendanceHandler) GetMonthlyAttendance(w http.ResponseWriter, r *http.
 		HolidayDays:   holidayDays,
 		AttendancePct: pct,
 		Records:       records,
-	})
+	}
+
+	if h.cache != nil {
+		h.cache.Set(cacheKey, monthResp, 2*time.Minute)
+	}
+
+	respondJSON(w, http.StatusOK, monthResp)
 }
 
 // GetAttendanceSummary returns overall working days, days present/absent/late and percentage.
@@ -135,8 +165,23 @@ func (h *AttendanceHandler) GetMonthlyAttendance(w http.ResponseWriter, r *http.
 func (h *AttendanceHandler) GetAttendanceSummary(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's attendance summary")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
+	}
+
+	// Check local cache
+	summaryKey := fmt.Sprintf("attendance:summary:%s", studentID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(summaryKey); found && val != nil {
+			if cachedSum, ok := val.(models.AttendanceSummaryResponse); ok {
+				respondJSON(w, http.StatusOK, cachedSum)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -177,7 +222,7 @@ func (h *AttendanceHandler) GetAttendanceSummary(w http.ResponseWriter, r *http.
 		pct = (float64(present+late) / float64(totalWorking)) * 100.0
 	}
 
-	respondJSON(w, http.StatusOK, models.AttendanceSummaryResponse{
+	summaryResp := models.AttendanceSummaryResponse{
 		StudentID:         studentID,
 		TotalWorkingDays:  totalWorking,
 		DaysPresent:       present,
@@ -185,7 +230,13 @@ func (h *AttendanceHandler) GetAttendanceSummary(w http.ResponseWriter, r *http.
 		DaysLate:          late,
 		Holidays:          holidays,
 		OverallPercentage: pct,
-	})
+	}
+
+	if h.cache != nil {
+		h.cache.Set(summaryKey, summaryResp, 2*time.Minute)
+	}
+
+	respondJSON(w, http.StatusOK, summaryResp)
 }
 
 // SubmitLeave files a student leave application.
@@ -207,12 +258,24 @@ func (h *AttendanceHandler) SubmitLeave(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Guard against IDOR: Verify caller has rights for this student ID
+	if !VerifyStudentOwnership(r, req.StudentID) {
+		respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot submit leave for another student")
+		return
+	}
+
 	leaveID := fmt.Sprintf("leave-%d", time.Now().UnixNano())
 	var attach *string
 	if strings.TrimSpace(req.AttachmentURL) != "" {
 		trimmed := strings.TrimSpace(req.AttachmentURL)
+		if err := security.ValidateSafeURL(trimmed); err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid attachment_url: "+err.Error())
+			return
+		}
 		attach = &trimmed
 	}
+
+	req.Reason = security.SanitizeText(req.Reason)
 
 	query := `
 		INSERT INTO leave_applications (id, student_id, leave_type, start_date, end_date, reason, attachment_url, status, created_at, updated_at)
@@ -237,6 +300,11 @@ func (h *AttendanceHandler) SubmitLeave(w http.ResponseWriter, r *http.Request) 
 	app.StartDate = sDate.Format("2006-01-02")
 	app.EndDate = eDate.Format("2006-01-02")
 
+	// Invalidate student leave requests cache
+	if h.cache != nil {
+		h.cache.InvalidatePrefix("attendance:leaves:" + req.StudentID)
+	}
+
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"message":           "Leave application submitted successfully",
 		"leave_application": app,
@@ -248,8 +316,23 @@ func (h *AttendanceHandler) SubmitLeave(w http.ResponseWriter, r *http.Request) 
 func (h *AttendanceHandler) ListLeaveRequests(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's leave requests")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
+	}
+
+	// Check local cache
+	leavesKey := fmt.Sprintf("attendance:leaves:%s", studentID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(leavesKey); found && val != nil {
+			if cachedList, ok := val.([]models.LeaveApplication); ok {
+				respondJSON(w, http.StatusOK, cachedList)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -278,6 +361,10 @@ func (h *AttendanceHandler) ListLeaveRequests(w http.ResponseWriter, r *http.Req
 			app.EndDate = eDate.Format("2006-01-02")
 			list = append(list, app)
 		}
+	}
+
+	if h.cache != nil {
+		h.cache.Set(leavesKey, list, 2*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, list)

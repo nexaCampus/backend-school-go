@@ -33,6 +33,11 @@ func (h *CampusHandler) GetClubs(w http.ResponseWriter, r *http.Request) {
 // Route 44: POST /api/v1/joinClubs
 func (h *CampusHandler) JoinClub(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var body struct {
 		ClubID    string `json:"club_id"`
 		StudentID string `json:"student_id"`
@@ -43,6 +48,11 @@ func (h *CampusHandler) JoinClub(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.StudentID == "" {
 		body.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(body.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	refNo, err := h.svc.JoinClub(r.Context(), body.ClubID, body.StudentID, claims.UserID, claims.Role, r.RemoteAddr)
@@ -66,6 +76,16 @@ func (h *CampusHandler) GetHouses(w http.ResponseWriter, r *http.Request) {
 // Route 46: POST /api/v1/addHousePoints
 func (h *CampusHandler) AddHousePoints(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.AddHousePointsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -93,6 +113,11 @@ func (h *CampusHandler) GetLostItems(w http.ResponseWriter, r *http.Request) {
 // Route 48: POST /api/v1/reportLostItems
 func (h *CampusHandler) ReportLostItem(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var body map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -111,6 +136,11 @@ func (h *CampusHandler) ReportLostItem(w http.ResponseWriter, r *http.Request) {
 // Route 49: POST /api/v1/claimItems
 func (h *CampusHandler) ClaimLostItem(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.ClaimLostItemRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -118,6 +148,11 @@ func (h *CampusHandler) ClaimLostItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.StudentID == "" {
 		req.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(req.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	refNo, err := h.svc.ClaimLostItem(r.Context(), &req, claims.UserID, claims.Role, r.RemoteAddr)

@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
+	"github.com/nexaCampus/backend-school-go/internal/database"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
@@ -87,3 +90,101 @@ func TestRefreshTokenFlow(t *testing.T) {
 		t.Fatalf("expected token type refresh, got %s", parsedClaims.TokenType)
 	}
 }
+
+func TestLocalCacheBeforeDatabaseFallback(t *testing.T) {
+	// 1. Initialize local cache
+	localCache, err := cache.NewRistrettoCache(64, 10000)
+	if err != nil {
+		t.Fatalf("failed to initialize Ristretto cache: %v", err)
+	}
+	defer localCache.Close()
+	cache.SetDefaultCache(localCache)
+
+	var dbQueryCount int32
+
+	// Simulated database query function
+	simulatedDBQuery := func() (interface{}, error) {
+		atomic.AddInt32(&dbQueryCount, 1)
+		return map[string]interface{}{
+			"student_id": "STU10211125",
+			"full_name":  "Rajen Shaw",
+			"grade":      "12",
+			"section":    "E",
+		}, nil
+	}
+
+	key := "student:profile:STU10211125"
+
+	// 1st Call: Cache Miss -> Must hit the database
+	res1, err := database.GetOrCompute(key, 5*time.Minute, simulatedDBQuery)
+	if err != nil {
+		t.Fatalf("unexpected error on 1st call: %v", err)
+	}
+	if atomic.LoadInt32(&dbQueryCount) != 1 {
+		t.Fatalf("expected dbQueryCount to be 1 on cache miss, got %d", dbQueryCount)
+	}
+	data1, ok := res1.(map[string]interface{})
+	if !ok || data1["full_name"] != "Rajen Shaw" {
+		t.Fatalf("unexpected data on 1st call: %+v", res1)
+	}
+
+	// 2nd Call: Cache Hit -> Must NOT hit the database
+	res2, err := database.GetOrCompute(key, 5*time.Minute, simulatedDBQuery)
+	if err != nil {
+		t.Fatalf("unexpected error on 2nd call: %v", err)
+	}
+	if atomic.LoadInt32(&dbQueryCount) != 1 {
+		t.Fatalf("expected dbQueryCount to remain 1 on cache hit, got %d", dbQueryCount)
+	}
+	data2, ok := res2.(map[string]interface{})
+	if !ok || data2["full_name"] != "Rajen Shaw" {
+		t.Fatalf("unexpected data on 2nd call: %+v", res2)
+	}
+
+	// 3rd Step: Invalidate cache key (e.g., student updated avatar / profile mutation)
+	database.InvalidateKey(key)
+
+	// 4th Call: Cache Miss again after invalidation -> Must query DB
+	res3, err := database.GetOrCompute(key, 5*time.Minute, simulatedDBQuery)
+	if err != nil {
+		t.Fatalf("unexpected error on 3rd call: %v", err)
+	}
+	if atomic.LoadInt32(&dbQueryCount) != 2 {
+		t.Fatalf("expected dbQueryCount to increment to 2 after invalidation, got %d", dbQueryCount)
+	}
+	data3, ok := res3.(map[string]interface{})
+	if !ok || data3["full_name"] != "Rajen Shaw" {
+		t.Fatalf("unexpected data on 3rd call: %+v", res3)
+	}
+}
+
+func TestLocalCachePrefixInvalidation(t *testing.T) {
+	localCache, err := cache.NewRistrettoCache(64, 10000)
+	if err != nil {
+		t.Fatalf("failed to initialize cache: %v", err)
+	}
+	defer localCache.Close()
+	cache.SetDefaultCache(localCache)
+
+	// Set multiple keys under prefix
+	localCache.Set("homework:list:12:E:all", []string{"hw1", "hw2"}, 5*time.Minute)
+	localCache.Set("homework:list:12:E:pending", []string{"hw1"}, 5*time.Minute)
+	localCache.Set("notice:list:all:10", []string{"n1"}, 5*time.Minute)
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Invalidate all homework lists
+	database.InvalidatePrefix("homework:")
+	time.Sleep(10 * time.Millisecond)
+
+	if _, found := localCache.Get("homework:list:12:E:all"); found {
+		t.Errorf("expected homework:list:12:E:all to be evicted")
+	}
+	if _, found := localCache.Get("homework:list:12:E:pending"); found {
+		t.Errorf("expected homework:list:12:E:pending to be evicted")
+	}
+	if _, found := localCache.Get("notice:list:all:10"); !found {
+		t.Errorf("expected notice:list:all:10 to remain in cache")
+	}
+}
+

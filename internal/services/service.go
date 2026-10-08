@@ -2,7 +2,12 @@ package services
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nexaCampus/backend-school-go/internal/audit"
@@ -391,6 +396,20 @@ func (s *Service) CreatePaymentOrder(ctx context.Context, req *models.CreatePaym
 
 // Route 26: POST /api/v1/payment/verify [No Cache, Mutation]
 func (s *Service) VerifyPayment(ctx context.Context, req *models.VerifyPaymentRequest, actorID, actorRole, ip string) (*models.StudentPaymentTransaction, string, error) {
+	if req.OrderID == "" || req.PaymentID == "" || req.Signature == "" {
+		return nil, "", errors.New("missing required payment verification parameters: order_id, payment_id, and signature are required")
+	}
+
+	// Cryptographic HMAC-SHA256 signature verification against configured Razorpay secret
+	expectedMsg := req.OrderID + "|" + req.PaymentID
+	mac := hmac.New(sha256.New, []byte(s.cfg.RazorpayKeySecret))
+	mac.Write([]byte(expectedMsg))
+	expectedSignature := hex.EncodeToString(mac.Sum(nil))
+
+	if !hmac.Equal([]byte(strings.ToLower(req.Signature)), []byte(strings.ToLower(expectedSignature))) {
+		return nil, "", errors.New("invalid payment signature: cryptographic verification failed")
+	}
+
 	refNo := s.auditor.RecordMutation(actorID, actorRole, "VERIFY_PAYMENT", "payments", req, ip)
 	txn, err := s.financeRepo.VerifyPayment(ctx, req)
 	if err != nil {

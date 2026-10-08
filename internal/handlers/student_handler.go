@@ -14,16 +14,26 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
+	"github.com/nexaCampus/backend-school-go/internal/middleware"
 	"github.com/nexaCampus/backend-school-go/internal/models"
+	"github.com/nexaCampus/backend-school-go/internal/security"
 )
 
 type StudentHandler struct {
 	pool      *pgxpool.Pool
 	jwtSecret string
+	cache     cache.Cache
 }
 
-func NewStudentHandler(pool *pgxpool.Pool, jwtSecret string) *StudentHandler {
-	return &StudentHandler{pool: pool, jwtSecret: jwtSecret}
+func NewStudentHandler(pool *pgxpool.Pool, jwtSecret string, c ...cache.Cache) *StudentHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &StudentHandler{pool: pool, jwtSecret: jwtSecret, cache: cc}
 }
 
 // GetProfile retrieves a student's full profile, guardian details, and smart card balance.
@@ -36,6 +46,25 @@ func (h *StudentHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	if id == "" {
 		respondError(w, http.StatusBadRequest, "Student ID is required")
 		return
+	}
+
+	// Guard against IDOR: Verify token holder is allowed to view this profile
+	if claims, ok := middleware.GetClaims(r.Context()); ok && claims != nil {
+		if claims.StudentID != id {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - access to another student's profile is denied")
+			return
+		}
+	}
+
+	// 1. Check local cache before database query (Cache Hit: 0 latency)
+	cacheKey := fmt.Sprintf("student:profile:%s", id)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if s, ok := val.(models.Student); ok {
+				respondJSON(w, http.StatusOK, s)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -85,6 +114,11 @@ func (h *StudentHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Store in local cache with 5-minute TTL on cache miss
+	if h.cache != nil {
+		h.cache.Set(cacheKey, student, 5*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, student)
 }
 
@@ -100,6 +134,14 @@ func (h *StudentHandler) UpdateAvatar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Guard against IDOR: Verify token holder is allowed to update this avatar
+	if claims, ok := middleware.GetClaims(r.Context()); ok && claims != nil {
+		if claims.StudentID != id {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot update another student's avatar")
+			return
+		}
+	}
+
 	var req models.UpdateAvatarRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "Invalid request payload")
@@ -109,6 +151,12 @@ func (h *StudentHandler) UpdateAvatar(w http.ResponseWriter, r *http.Request) {
 	avatarURL := strings.TrimSpace(req.AvatarURL)
 	if avatarURL == "" {
 		respondError(w, http.StatusBadRequest, "avatar_url is required")
+		return
+	}
+
+	// SSRF Prevention: Validate URL scheme and block internal IP addresses
+	if err := security.ValidateSafeURL(avatarURL); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid avatar URL: "+err.Error())
 		return
 	}
 
@@ -156,6 +204,14 @@ func (h *StudentHandler) UpdateAvatar(w http.ResponseWriter, r *http.Request) {
 		}
 		respondError(w, http.StatusInternalServerError, "Failed to update profile avatar")
 		return
+	}
+
+	// Invalidate local cache for updated profile and dashboard
+	if h.cache != nil {
+		h.cache.Delete(fmt.Sprintf("student:profile:%s", id))
+		h.cache.Delete(fmt.Sprintf("student:profile:%s", student.StudentID))
+		h.cache.InvalidatePrefix(fmt.Sprintf("student:dashboard:%s", id))
+		h.cache.InvalidatePrefix(fmt.Sprintf("student:dashboard:%s", student.StudentID))
 	}
 
 	respondJSON(w, http.StatusOK, student)
@@ -235,6 +291,17 @@ func (h *StudentHandler) GetDashboardSummary(w http.ResponseWriter, r *http.Requ
 
 	grade := strings.TrimSpace(r.URL.Query().Get("grade"))
 	section := strings.TrimSpace(r.URL.Query().Get("section"))
+
+	// Check local cache before executing 4 database queries (Cache Hit)
+	cacheKey := fmt.Sprintf("student:dashboard:%s:%s:%s", studentID, grade, section)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedSummary, ok := val.(DashboardSummaryResponse); ok {
+				respondJSON(w, http.StatusOK, cachedSummary)
+				return
+			}
+		}
+	}
 
 	// 1. Fetch Student Profile
 	var student models.Student
@@ -351,11 +418,17 @@ func (h *StudentHandler) GetDashboardSummary(w http.ResponseWriter, r *http.Requ
 		attendanceRate = 96.0
 	}
 
-	respondJSON(w, http.StatusOK, DashboardSummaryResponse{
+	summary := DashboardSummaryResponse{
 		Student:              student,
 		AttendanceRate:       attendanceRate,
 		TodayClasses:         todayClasses,
 		PendingHomeworkCount: pendingHomeworkCount,
 		UrgentNotices:        urgentNotices,
-	})
+	}
+
+	if h.cache != nil {
+		h.cache.Set(cacheKey, summary, 2*time.Minute)
+	}
+
+	respondJSON(w, http.StatusOK, summary)
 }

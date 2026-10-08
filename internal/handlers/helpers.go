@@ -22,14 +22,45 @@ func respondError(w http.ResponseWriter, status int, message string) {
 	respondJSON(w, status, map[string]string{"error": message})
 }
 
-// resolveStudentID retrieves student_id from query param, or falls back to JWT claims.
+// resolveStudentID securely retrieves student_id, strictly guarding against IDOR.
+// If an authenticated student attempts to pass another student's ID, it returns ""
+// so the caller handler can reject the request with 403 Forbidden.
 func resolveStudentID(r *http.Request) string {
-	studentID := strings.TrimSpace(r.URL.Query().Get("student_id"))
-	if studentID != "" {
-		return studentID
-	}
-	if claims, ok := middleware.GetClaims(r.Context()); ok && claims.StudentID != "" {
+	paramID := strings.TrimSpace(r.URL.Query().Get("student_id"))
+
+	// 1. Check StudentClaims context (from /v1 portal group)
+	if claims, ok := middleware.GetClaims(r.Context()); ok && claims != nil && claims.StudentID != "" {
+		if paramID != "" && paramID != claims.StudentID {
+			// IDOR blocked: Student token cannot query another student's data
+			return ""
+		}
 		return claims.StudentID
 	}
-	return ""
+
+	// 2. Check UserClaims context (from /api/v1 engine group)
+	if userClaims := middleware.GetUserClaims(r.Context()); userClaims != nil {
+		if paramID != "" {
+			if !userClaims.HasStudentAccess(paramID) {
+				return ""
+			}
+			return paramID
+		}
+		return userClaims.UserID
+	}
+
+	return paramID
+}
+
+// VerifyStudentOwnership checks whether the caller has rights to the specified targetStudentID.
+func VerifyStudentOwnership(r *http.Request, targetStudentID string) bool {
+	if targetStudentID == "" {
+		return false
+	}
+	if claims, ok := middleware.GetClaims(r.Context()); ok && claims != nil {
+		return claims.StudentID == targetStudentID
+	}
+	if userClaims := middleware.GetUserClaims(r.Context()); userClaims != nil {
+		return userClaims.HasStudentAccess(targetStudentID)
+	}
+	return false
 }

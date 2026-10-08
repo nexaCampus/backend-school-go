@@ -11,15 +11,24 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
+	"github.com/nexaCampus/backend-school-go/internal/security"
 )
 
 type HomeworkHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewHomeworkHandler(pool *pgxpool.Pool) *HomeworkHandler {
-	return &HomeworkHandler{pool: pool}
+func NewHomeworkHandler(pool *pgxpool.Pool, c ...cache.Cache) *HomeworkHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &HomeworkHandler{pool: pool, cache: cc}
 }
 
 // ListHomework filters homework assignments with student submission status.
@@ -42,6 +51,17 @@ func (h *HomeworkHandler) ListHomework(w http.ResponseWriter, r *http.Request) {
 	}
 	if section == "" {
 		section = "E"
+	}
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("homework:list:%s:%s:%s:%s", studentID, grade, section, statusFilter)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedItems, ok := val.([]models.Homework); ok {
+				respondJSON(w, http.StatusOK, cachedItems)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -100,6 +120,10 @@ func (h *HomeworkHandler) ListHomework(w http.ResponseWriter, r *http.Request) {
 		items = append(items, hw)
 	}
 
+	if h.cache != nil {
+		h.cache.Set(cacheKey, items, 3*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, items)
 }
 
@@ -113,6 +137,17 @@ func (h *HomeworkHandler) GetHomeworkDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	studentID := resolveStudentID(r)
+
+	// Check local cache
+	detailKey := fmt.Sprintf("homework:detail:%s:%s", studentID, homeworkID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(detailKey); found && val != nil {
+			if cachedHw, ok := val.(models.Homework); ok {
+				respondJSON(w, http.StatusOK, cachedHw)
+				return
+			}
+		}
+	}
 
 	query := `
 		SELECT
@@ -158,6 +193,10 @@ func (h *HomeworkHandler) GetHomeworkDetail(w http.ResponseWriter, r *http.Reque
 		hw.ProgressPct = 0
 	}
 
+	if h.cache != nil {
+		h.cache.Set(detailKey, hw, 10*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, hw)
 }
 
@@ -186,6 +225,18 @@ func (h *HomeworkHandler) SubmitHomework(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Guard against IDOR: Verify caller has permission for this student ID
+	if !VerifyStudentOwnership(r, req.StudentID) {
+		respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot submit homework for another student")
+		return
+	}
+
+	// Guard against SSRF: Validate submission file URL
+	if err := security.ValidateSafeURL(req.SubmissionFileURL); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid submission_file_url: "+err.Error())
+		return
+	}
+
 	submissionID := fmt.Sprintf("sub-%d", time.Now().UnixNano())
 	query := `
 		INSERT INTO homework_submissions (id, homework_id, student_id, submission_file_url, status, submitted_at, updated_at)
@@ -206,6 +257,13 @@ func (h *HomeworkHandler) SubmitHomework(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to record homework submission")
 		return
+	}
+
+	// Invalidate local cache for homework lists, details, and student dashboard
+	if h.cache != nil {
+		h.cache.InvalidatePrefix("homework:list:")
+		h.cache.Delete(fmt.Sprintf("homework:detail:%s:%s", req.StudentID, homeworkID))
+		h.cache.InvalidatePrefix("student:dashboard:" + req.StudentID)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{

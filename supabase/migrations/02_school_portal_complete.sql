@@ -464,3 +464,29 @@ CREATE TABLE IF NOT EXISTS competition_registrations (
     registered_at TIMESTAMPTZ DEFAULT now(),
     UNIQUE (competition_id, student_id)
 );
+
+-- 21. Row-Level Security (RLS) Enablement & Service Role Policies
+DO $$
+DECLARE
+    t text;
+    tables text[] := ARRAY[
+        'students', 'homework', 'homework_submissions', 'attendance', 'leave_applications',
+        'timetable', 'fee_items', 'fee_history', 'notices', 'helpdesk_tickets',
+        'bus_routes', 'bus_live_locations', 'library_books', 'library_borrowings',
+        'library_reservations', 'exam_hall_tickets', 'canteen_menu', 'canteen_transactions',
+        'ptm_sessions', 'ptm_slots', 'digital_hall_passes', 'health_profiles',
+        'clinic_visits', 'medical_consents', 'student_merits', 'store_products',
+        'store_orders', 'lost_found_items', 'gallery_albums', 'gallery_photos',
+        'clubs', 'student_clubs', 'club_competitions', 'competition_registrations'
+    ];
+BEGIN
+    FOREACH t IN ARRAY tables LOOP
+        EXECUTE format('ALTER TABLE IF EXISTS %I ENABLE ROW LEVEL SECURITY;', t);
+        BEGIN
+            EXECUTE format('CREATE POLICY %I ON %I FOR ALL TO service_role USING (true) WITH CHECK (true);', 'service_role_' || t, t);
+        EXCEPTION WHEN duplicate_object THEN
+            NULL;
+        END;
+    END LOOP;
+END $$;
+

@@ -157,3 +157,36 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     ip_address TEXT NOT NULL,
     timestamp TIMESTAMPTZ DEFAULT now()
 );
+
+-- 5. Row-Level Security (RLS) Policies
+ALTER TABLE students ENABLE ROW LEVEL SECURITY;
+ALTER TABLE timetables ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lab_schedules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE diary_remarks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE homework ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attendance ENABLE ROW LEVEL SECURITY;
+ALTER TABLE leaves ENABLE ROW LEVEL SECURITY;
+ALTER TABLE exam_dates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE exam_timetable ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tax_receipts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+    EXECUTE 'CREATE POLICY "service_role_students" ON students FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_timetables" ON timetables FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_lab_schedules" ON lab_schedules FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_diary_remarks" ON diary_remarks FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_homework" ON homework FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_attendance" ON attendance FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_leaves" ON leaves FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_exam_dates" ON exam_dates FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_exam_timetable" ON exam_timetable FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_payments" ON payments FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_tax_receipts" ON tax_receipts FOR ALL TO service_role USING (true) WITH CHECK (true)';
+    EXECUTE 'CREATE POLICY "service_role_audit_logs" ON audit_logs FOR ALL TO service_role USING (true) WITH CHECK (true)';
+EXCEPTION WHEN duplicate_object THEN
+    NULL;
+END $$;
+

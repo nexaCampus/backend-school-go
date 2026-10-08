@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/config"
 	"github.com/nexaCampus/backend-school-go/internal/database"
 	"github.com/nexaCampus/backend-school-go/internal/handlers"
@@ -32,26 +33,37 @@ func main() {
 	}
 	defer pool.Close()
 
-	// 3. Instantiate handlers covering all 21 modules
+	// 2.5 Initialize high-performance L1 in-memory cache (64 MB TinyLFU with SingleFlight protection)
+	cacheEngine, err := cache.NewRistrettoCache(64, 50000)
+	if err != nil {
+		log.Printf("[WARN] Failed to initialize Ristretto cache, falling back to default: %v", err)
+	} else {
+		defer cacheEngine.Close()
+		cache.SetDefaultCache(cacheEngine)
+		log.Println("[INFO] Local L1 cache initialized (64 MB ceiling, TinyLFU eviction, SingleFlight stampede guard)")
+	}
+	cacheInstance := cache.GetDefaultCache()
+
+	// 3. Instantiate handlers covering all 21 modules with local caching enabled
 	authHandler := handlers.NewAuthHandler(pool, cfg.JWTSecret)
-	studentHandler := handlers.NewStudentHandler(pool, cfg.JWTSecret)
-	homeworkHandler := handlers.NewHomeworkHandler(pool)
-	attendanceHandler := handlers.NewAttendanceHandler(pool)
-	timetableHandler := handlers.NewTimetableHandler(pool)
-	feeHandler := handlers.NewFeeHandler(pool)
-	noticeHandler := handlers.NewNoticeHandler(pool)
-	helpdeskHandler := handlers.NewHelpdeskHandler(pool)
-	transportHandler := handlers.NewTransportHandler(pool)
-	miscHandler := handlers.NewMiscHandler(pool)
-	academicsHandler := handlers.NewAcademicsHandler(pool)
-	ptmHandler := handlers.NewPtmHandler(pool)
-	hallPassHandler := handlers.NewHallPassHandler(pool)
-	healthHandler := handlers.NewHealthHandler(pool)
-	meritsHandler := handlers.NewMeritsHandler(pool)
-	storeHandler := handlers.NewStoreHandler(pool)
-	lostFoundHandler := handlers.NewLostFoundHandler(pool)
-	galleryHandler := handlers.NewGalleryHandler(pool)
-	clubsHandler := handlers.NewClubsHandler(pool)
+	studentHandler := handlers.NewStudentHandler(pool, cfg.JWTSecret, cacheInstance)
+	homeworkHandler := handlers.NewHomeworkHandler(pool, cacheInstance)
+	attendanceHandler := handlers.NewAttendanceHandler(pool, cacheInstance)
+	timetableHandler := handlers.NewTimetableHandler(pool, cacheInstance)
+	feeHandler := handlers.NewFeeHandler(pool, cacheInstance)
+	noticeHandler := handlers.NewNoticeHandler(pool, cacheInstance)
+	helpdeskHandler := handlers.NewHelpdeskHandler(pool, cacheInstance)
+	transportHandler := handlers.NewTransportHandler(pool, cacheInstance)
+	miscHandler := handlers.NewMiscHandler(pool, cacheInstance)
+	academicsHandler := handlers.NewAcademicsHandler(pool, cacheInstance)
+	ptmHandler := handlers.NewPtmHandler(pool, cacheInstance)
+	hallPassHandler := handlers.NewHallPassHandler(pool, cacheInstance)
+	healthHandler := handlers.NewHealthHandler(pool, cacheInstance)
+	meritsHandler := handlers.NewMeritsHandler(pool, cacheInstance)
+	storeHandler := handlers.NewStoreHandler(pool, cacheInstance)
+	lostFoundHandler := handlers.NewLostFoundHandler(pool, cacheInstance)
+	galleryHandler := handlers.NewGalleryHandler(pool, cacheInstance)
+	clubsHandler := handlers.NewClubsHandler(pool, cacheInstance)
 
 	// 4. Setup Router and Middlewares
 	r := chi.NewRouter()
@@ -62,6 +74,8 @@ func main() {
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.Compress(5))
 	r.Use(chimiddleware.Timeout(60 * time.Second))
+	r.Use(appmiddleware.SecurityHeaders)
+	r.Use(appmiddleware.MaxBodyLimit(10 * 1024 * 1024))
 	r.Use(appmiddleware.NewCORS(cfg.CORSOrigins))
 
 	// Health check for Render uptime ping monitor
@@ -73,9 +87,10 @@ func main() {
 
 	// 5. Mount API Routes under /v1
 	r.Route("/v1", func(v1 chi.Router) {
-		// 1. System & Authentication
-		v1.Post("/auth/verify", authHandler.Verify)
-		v1.Post("/auth/refresh", authHandler.Refresh)
+		// 1. System & Authentication (Strict token bucket limiter to prevent brute force)
+		strictAuthLimiter := appmiddleware.NewStrictRateLimiter(10, 5)
+		v1.With(strictAuthLimiter.Middleware()).Post("/auth/verify", authHandler.Verify)
+		v1.With(strictAuthLimiter.Middleware()).Post("/auth/refresh", authHandler.Refresh)
 
 		// Portal group (supports optional/bearer JWT)
 		v1.Group(func(portal chi.Router) {

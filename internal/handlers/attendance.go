@@ -25,9 +25,19 @@ func NewAttendanceAPIHandler(svc *services.Service) *AttendanceAPIHandler {
 // Route 13: GET /api/v1/attendance
 func (h *AttendanceAPIHandler) GetAttendance(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	month, _ := strconv.Atoi(r.URL.Query().Get("month"))
@@ -50,6 +60,16 @@ func (h *AttendanceAPIHandler) GetAttendance(w http.ResponseWriter, r *http.Requ
 // Route 14: POST /api/v1/attendance
 func (h *AttendanceAPIHandler) BatchAttendance(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.BatchAttendanceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -67,6 +87,11 @@ func (h *AttendanceAPIHandler) BatchAttendance(w http.ResponseWriter, r *http.Re
 // Route 15: POST /api/v1/leaveRequest
 func (h *AttendanceAPIHandler) CreateLeaveRequest(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.StudentLeaveRecord
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -74,6 +99,11 @@ func (h *AttendanceAPIHandler) CreateLeaveRequest(w http.ResponseWriter, r *http
 	}
 	if req.StudentID == "" {
 		req.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(req.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	refNo, err := h.svc.CreateLeaveRequest(r.Context(), &req, claims.UserID, claims.Role, r.RemoteAddr)
@@ -87,9 +117,19 @@ func (h *AttendanceAPIHandler) CreateLeaveRequest(w http.ResponseWriter, r *http
 // Route 16: GET /api/v1/leaveRequest
 func (h *AttendanceAPIHandler) ListLeaveRequests(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.ListLeaveRequests(r.Context(), studentID)
@@ -103,6 +143,16 @@ func (h *AttendanceAPIHandler) ListLeaveRequests(w http.ResponseWriter, r *http.
 // Route 17: PUT /api/v1/leaveRequest/review
 func (h *AttendanceAPIHandler) ReviewLeaveRequest(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.ReviewLeaveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))

@@ -5,17 +5,26 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type NoticeHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewNoticeHandler(pool *pgxpool.Pool) *NoticeHandler {
-	return &NoticeHandler{pool: pool}
+func NewNoticeHandler(pool *pgxpool.Pool, c ...cache.Cache) *NoticeHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &NoticeHandler{pool: pool, cache: cc}
 }
 
 // ListNotices retrieves official school circulars filtered by category and limit.
@@ -31,25 +40,37 @@ func (h *NoticeHandler) ListNotices(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("notices:list:%s:%d", strings.ToLower(category), limit)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedNotices, ok := val.([]models.Notice); ok {
+				respondJSON(w, http.StatusOK, cachedNotices)
+				return
+			}
+		}
+	}
+
 	var query string
 	var args []interface{}
 
 	if category != "" && strings.ToLower(category) != "all" {
-		query = fmt.Sprintf(`
+		query = `
 			SELECT id, category, title, body, date_label, author, is_urgent, attachment_name, attachment_url, published_at
 			FROM notices
 			WHERE LOWER(category) = LOWER($1)
 			ORDER BY is_urgent DESC, published_at DESC
-			LIMIT %d;
-		`, limit)
-		args = []interface{}{category}
+			LIMIT $2;
+		`
+		args = []interface{}{category, limit}
 	} else {
-		query = fmt.Sprintf(`
+		query = `
 			SELECT id, category, title, body, date_label, author, is_urgent, attachment_name, attachment_url, published_at
 			FROM notices
 			ORDER BY is_urgent DESC, published_at DESC
-			LIMIT %d;
-		`, limit)
+			LIMIT $1;
+		`
+		args = []interface{}{limit}
 	}
 
 	rows, err := h.pool.Query(r.Context(), query, args...)
@@ -68,6 +89,11 @@ func (h *NoticeHandler) ListNotices(w http.ResponseWriter, r *http.Request) {
 		); err == nil {
 			notices = append(notices, n)
 		}
+	}
+
+	// Cache circulars for 5 minutes
+	if h.cache != nil {
+		h.cache.Set(cacheKey, notices, 5*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, notices)
