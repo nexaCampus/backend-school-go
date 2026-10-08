@@ -10,15 +10,23 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type MiscHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewMiscHandler(pool *pgxpool.Pool) *MiscHandler {
-	return &MiscHandler{pool: pool}
+func NewMiscHandler(pool *pgxpool.Pool, c ...cache.Cache) *MiscHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &MiscHandler{pool: pool, cache: cc}
 }
 
 // SearchBooks queries the library catalog by keyword and category.
@@ -26,6 +34,17 @@ func NewMiscHandler(pool *pgxpool.Pool) *MiscHandler {
 func (h *MiscHandler) SearchBooks(w http.ResponseWriter, r *http.Request) {
 	q := strings.TrimSpace(r.URL.Query().Get("query"))
 	category := strings.TrimSpace(r.URL.Query().Get("category"))
+
+	// Check local cache
+	cacheKey := fmt.Sprintf("library:books:%s:%s", strings.ToLower(q), strings.ToLower(category))
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedBooks, ok := val.([]models.LibraryBook); ok {
+				respondJSON(w, http.StatusOK, cachedBooks)
+				return
+			}
+		}
+	}
 
 	var query string
 	var args []interface{}
@@ -86,6 +105,10 @@ func (h *MiscHandler) SearchBooks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.cache != nil {
+		h.cache.Set(cacheKey, books, 5*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, books)
 }
 
@@ -94,8 +117,23 @@ func (h *MiscHandler) SearchBooks(w http.ResponseWriter, r *http.Request) {
 func (h *MiscHandler) GetBorrowings(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's borrowings")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
+	}
+
+	// Check local cache
+	borrowingsKey := fmt.Sprintf("library:borrowings:%s", studentID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(borrowingsKey); found && val != nil {
+			if cachedBorrowings, ok := val.([]models.LibraryBorrowing); ok {
+				respondJSON(w, http.StatusOK, cachedBorrowings)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -147,6 +185,10 @@ func (h *MiscHandler) GetBorrowings(w http.ResponseWriter, r *http.Request) {
 		borrowings = append(borrowings, bor)
 	}
 
+	if h.cache != nil {
+		h.cache.Set(borrowingsKey, borrowings, 2*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, borrowings)
 }
 
@@ -167,6 +209,12 @@ func (h *MiscHandler) ReserveBook(w http.ResponseWriter, r *http.Request) {
 
 	if req.StudentID == "" || req.BookID == "" {
 		respondError(w, http.StatusBadRequest, "student_id and book_id are required")
+		return
+	}
+
+	// Guard against IDOR: Verify ownership of student ID
+	if !VerifyStudentOwnership(r, req.StudentID) {
+		respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot reserve book for another student")
 		return
 	}
 
@@ -199,6 +247,10 @@ func (h *MiscHandler) ReserveBook(w http.ResponseWriter, r *http.Request) {
 		_, _ = h.pool.Exec(r.Context(), "UPDATE library_books SET available_copies = available_copies - 1 WHERE id = $1;", req.BookID)
 	}
 
+	if h.cache != nil {
+		h.cache.InvalidatePrefix("library:books:")
+	}
+
 	respondJSON(w, http.StatusCreated, models.BookReservation{
 		ID:         reservationID,
 		StudentID:  req.StudentID,
@@ -215,11 +267,26 @@ func (h *MiscHandler) ReserveBook(w http.ResponseWriter, r *http.Request) {
 func (h *MiscHandler) GetHallTicket(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's hall ticket")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
 	}
 
 	term := strings.TrimSpace(r.URL.Query().Get("term"))
+
+	// Check local cache
+	htKey := fmt.Sprintf("exams:hallticket:%s:%s", studentID, strings.ToLower(term))
+	if h.cache != nil {
+		if val, found := h.cache.Get(htKey); found && val != nil {
+			if cachedHT, ok := val.(models.HallTicket); ok {
+				respondJSON(w, http.StatusOK, cachedHT)
+				return
+			}
+		}
+	}
 
 	var query string
 	var args []interface{}
@@ -272,6 +339,10 @@ func (h *MiscHandler) GetHallTicket(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(rulesJSON, &ht.Rules)
 	}
 
+	if h.cache != nil {
+		h.cache.Set(htKey, ht, 15*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, ht)
 }
 
@@ -280,8 +351,23 @@ func (h *MiscHandler) GetHallTicket(w http.ResponseWriter, r *http.Request) {
 func (h *MiscHandler) GetCanteenWallet(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's canteen wallet")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
+	}
+
+	// Check local cache
+	walletKey := fmt.Sprintf("canteen:wallet:%s", studentID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(walletKey); found && val != nil {
+			if cachedWallet, ok := val.(models.CanteenWallet); ok {
+				respondJSON(w, http.StatusOK, cachedWallet)
+				return
+			}
+		}
 	}
 
 	var balance float64
@@ -317,11 +403,17 @@ func (h *MiscHandler) GetCanteenWallet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respondJSON(w, http.StatusOK, models.CanteenWallet{
+	wallet := models.CanteenWallet{
 		StudentID:    studentID,
 		Balance:      balance,
 		Transactions: transactions,
-	})
+	}
+
+	if h.cache != nil {
+		h.cache.Set(walletKey, wallet, 30*time.Second)
+	}
+
+	respondJSON(w, http.StatusOK, wallet)
 }
 
 // GetCanteenMenu returns today's cafeteria menu with dietary tags and pricing.
@@ -330,6 +422,17 @@ func (h *MiscHandler) GetCanteenMenu(w http.ResponseWriter, r *http.Request) {
 	day := strings.TrimSpace(r.URL.Query().Get("day"))
 	if day == "" {
 		day = time.Now().Weekday().String()
+	}
+
+	// Check local cache
+	menuKey := fmt.Sprintf("canteen:menu:%s", strings.ToLower(day))
+	if h.cache != nil {
+		if val, found := h.cache.Get(menuKey); found && val != nil {
+			if cachedItems, ok := val.([]models.CanteenMenuItem); ok {
+				respondJSON(w, http.StatusOK, cachedItems)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -352,6 +455,10 @@ func (h *MiscHandler) GetCanteenMenu(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&it.ID, &it.DayOfWeek, &it.Name, &it.Category, &it.DietaryTag, &it.Price, &it.IsAvailable); err == nil {
 			items = append(items, it)
 		}
+	}
+
+	if h.cache != nil {
+		h.cache.Set(menuKey, items, 15*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, items)

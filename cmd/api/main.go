@@ -127,37 +127,38 @@ func main() {
 
 		// Category 1: Student Identity, Admission & Profiles
 		api.Get("/studentData", studentHandler.GetStudentData)
-		api.Post("/newStudentData", studentHandler.NewStudentData)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/newStudentData", studentHandler.NewStudentData)
 		api.Put("/updateStudentData", studentHandler.UpdateStudentData)
 
 		// Category 2: Academics, Time Tables & Classroom Operations
 		api.Get("/timeTable", academicsHandler.GetTimeTable)
-		api.Put("/updateTimeTable", academicsHandler.UpdateTimeTable)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Put("/updateTimeTable", academicsHandler.UpdateTimeTable)
 		api.Get("/labTimeTable", academicsHandler.GetLabTimeTable)
 		api.Get("/syllabus", academicsHandler.GetSyllabus)
 		api.Get("/dairy", academicsHandler.GetDiary)
-		api.Post("/dairy", academicsHandler.AddDiary)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/dairy", academicsHandler.AddDiary)
 		api.Get("/homework", academicsHandler.GetHomework)
-		api.Post("/homework", academicsHandler.PostHomework)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/homework", academicsHandler.PostHomework)
 		api.Post("/homework/submit", academicsHandler.SubmitHomework)
 		api.Get("/attendance", attendanceHandler.GetAttendance)
-		api.Post("/attendance", attendanceHandler.BatchAttendance)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/attendance", attendanceHandler.BatchAttendance)
 		api.Post("/leaveRequest", attendanceHandler.CreateLeaveRequest)
 		api.Get("/leaveRequest", attendanceHandler.ListLeaveRequests)
-		api.Put("/leaveRequest/review", attendanceHandler.ReviewLeaveRequest)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Put("/leaveRequest/review", attendanceHandler.ReviewLeaveRequest)
 
 		// Category 3: Examinations, Report Cards & Results
-		api.Post("/setExamDates", academicsHandler.SetExamDates)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/setExamDates", academicsHandler.SetExamDates)
 		api.Get("/getExamDates", academicsHandler.GetExamDates)
 		api.Get("/examTimeTable", academicsHandler.GetExamTimeTable)
 		api.Get("/exam", academicsHandler.GetExamGuidelines)
 		api.Get("/results", academicsHandler.GetResults)
-		api.Post("/results", academicsHandler.BatchSaveResults)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/results", academicsHandler.BatchSaveResults)
 		api.Get("/reportCard", academicsHandler.GetReportCard)
 
-		// Category 4: Payments, Invoicing & GST Compliance
-		api.Post("/payment", financeHandler.CreatePayment)
-		api.Post("/payment/verify", financeHandler.VerifyPayment)
+		// Category 4: Payments, Invoicing & GST Compliance (Rate-limited against brute force / carding)
+		paymentLimiter := appmiddleware.NewStrictRateLimiter(60, 20)
+		api.With(paymentLimiter.Middleware()).Post("/payment", financeHandler.CreatePayment)
+		api.With(paymentLimiter.Middleware()).Post("/payment/verify", financeHandler.VerifyPayment)
 		api.Get("/paymentHistory", financeHandler.GetPaymentHistory)
 		api.Post("/taxReceipt", financeHandler.GenerateTaxReceipt)
 
@@ -185,7 +186,7 @@ func main() {
 		api.Post("/joinClubs", campusHandler.JoinClub)
 		api.Get("/houses", campusHandler.GetHouses)
 		api.Get("/housePoints", campusHandler.GetHouses)
-		api.Post("/addHousePoints", campusHandler.AddHousePoints)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/addHousePoints", campusHandler.AddHousePoints)
 		api.Get("/lostItems", campusHandler.GetLostItems)
 		api.Post("/reportLostItems", campusHandler.ReportLostItem)
 		api.Post("/claimItems", campusHandler.ClaimLostItem)
@@ -201,15 +202,15 @@ func main() {
 		api.Post("/ptmQuickBook", ptmHandler.BookPTMSlot)
 		api.Put("/reschedulePtmTimings", ptmHandler.ReschedulePTMSlot)
 		api.Post("/addToCalender", ptmHandler.AddToCalendar)
-		api.Post("/noticeMessageUrgentBroadcast", ptmHandler.UrgentNoticeBroadcast)
-		api.Post("/postNotice", ptmHandler.PostNotice)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/noticeMessageUrgentBroadcast", ptmHandler.UrgentNoticeBroadcast)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin", "teacher")).Post("/postNotice", ptmHandler.PostNotice)
 		api.Get("/trackNotificationsReference", ptmHandler.TrackNotification)
 
-		// Category 8: Staff Administration & Core System
+		// Category 8: Staff Administration & Core System (Admin only)
 		api.Get("/schoolInfo", auditStaffHandler.GetSchoolInfo)
-		api.Post("/addStaff", auditStaffHandler.AddStaff)
-		api.Put("/updateStaff", auditStaffHandler.UpdateStaff)
-		api.Delete("/deleteStaff", auditStaffHandler.DeleteStaff)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin")).Post("/addStaff", auditStaffHandler.AddStaff)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin")).Put("/updateStaff", auditStaffHandler.UpdateStaff)
+		api.With(appmiddleware.RequireRoles("admin", "superadmin")).Delete("/deleteStaff", auditStaffHandler.DeleteStaff)
 	})
 
 	// 8. Start HTTP Server with Tuned Settings

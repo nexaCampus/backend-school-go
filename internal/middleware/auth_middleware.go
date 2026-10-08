@@ -14,25 +14,17 @@ type contextKey string
 
 const claimsContextKey contextKey = "student_claims"
 
-// AuthMiddleware validates JWT Bearer tokens in the Authorization header.
+// AuthMiddleware validates JWT Bearer tokens in Authorization header or school_auth_token cookie.
 func AuthMiddleware(jwtSecret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
-				respondJSONError(w, http.StatusUnauthorized, "Authorization header required")
+			tokenStr := extractTokenString(r)
+			if tokenStr == "" {
+				respondJSONError(w, http.StatusUnauthorized, "Authorization token required")
 				return
 			}
 
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-				respondJSONError(w, http.StatusUnauthorized, "Invalid authorization format. Expected 'Bearer <token>'")
-				return
-			}
-
-			tokenStr := parts[1]
 			claims := &models.StudentClaims{}
-
 			token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
 				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 					return nil, jwt.ErrSignatureInvalid
@@ -51,38 +43,47 @@ func AuthMiddleware(jwtSecret string) func(http.Handler) http.Handler {
 	}
 }
 
-// OptionalAuthMiddleware validates JWT if Bearer header is present, but allows through requests without token.
+// OptionalAuthMiddleware validates JWT if Bearer header or cookie is present, but allows through requests without token.
 func OptionalAuthMiddleware(jwtSecret string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" {
+			tokenStr := extractTokenString(r)
+			if tokenStr == "" {
 				next.ServeHTTP(w, r)
 				return
 			}
 
-			parts := strings.SplitN(authHeader, " ", 2)
-			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-				tokenStr := parts[1]
-				claims := &models.StudentClaims{}
-
-				token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
-					if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-						return nil, jwt.ErrSignatureInvalid
-					}
-					return []byte(jwtSecret), nil
-				})
-
-				if err == nil && token.Valid {
-					ctx := context.WithValue(r.Context(), claimsContextKey, claims)
-					next.ServeHTTP(w, r.WithContext(ctx))
-					return
+			claims := &models.StudentClaims{}
+			token, err := jwt.ParseWithClaims(tokenStr, claims, func(token *jwt.Token) (interface{}, error) {
+				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+					return nil, jwt.ErrSignatureInvalid
 				}
+				return []byte(jwtSecret), nil
+			})
+
+			if err == nil && token.Valid {
+				ctx := context.WithValue(r.Context(), claimsContextKey, claims)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
 			}
 
 			respondJSONError(w, http.StatusUnauthorized, "Invalid authorization token")
 		})
 	}
+}
+
+func extractTokenString(r *http.Request) string {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader != "" {
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+			return strings.TrimSpace(parts[1])
+		}
+	}
+	if cookie, err := r.Cookie("school_auth_token"); err == nil && cookie.Value != "" {
+		return strings.TrimSpace(cookie.Value)
+	}
+	return ""
 }
 
 // GetClaims extracts student claims from request context.

@@ -8,21 +8,41 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
+	"github.com/nexaCampus/backend-school-go/internal/security"
 )
 
 type StoreHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewStoreHandler(pool *pgxpool.Pool) *StoreHandler {
-	return &StoreHandler{pool: pool}
+func NewStoreHandler(pool *pgxpool.Pool, c ...cache.Cache) *StoreHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &StoreHandler{pool: pool, cache: cc}
 }
 
 // ListProducts returns inventory catalog filtered by category.
 // Route: GET /v1/store/products?category={uniform|books|stationery}
 func (h *StoreHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 	category := strings.TrimSpace(r.URL.Query().Get("category"))
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("store:products:%s", strings.ToLower(category))
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedProducts, ok := val.([]models.StoreProduct); ok {
+				respondJSON(w, http.StatusOK, cachedProducts)
+				return
+			}
+		}
+	}
 
 	var query string
 	var args []interface{}
@@ -58,6 +78,10 @@ func (h *StoreHandler) ListProducts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.cache != nil {
+		h.cache.Set(cacheKey, products, 10*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, products)
 }
 
@@ -79,6 +103,13 @@ func (h *StoreHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "student_id and items are required")
 		return
 	}
+
+	if !VerifyStudentOwnership(r, req.StudentID) {
+		respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot place orders for another student")
+		return
+	}
+
+	req.DeliveryOption = security.SanitizeText(req.DeliveryOption)
 
 	var totalAmount float64
 	for _, item := range req.Items {
@@ -114,6 +145,13 @@ func (h *StoreHandler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 		SET smart_card_balance = GREATEST(0, smart_card_balance - $1)
 		WHERE student_id = $2;
 	`, totalAmount, req.StudentID)
+
+	// Invalidate store and student profile caches
+	if h.cache != nil {
+		h.cache.InvalidatePrefix("store:orders:")
+		h.cache.Delete(fmt.Sprintf("student:profile:%s", req.StudentID))
+		h.cache.Delete(fmt.Sprintf("canteen:wallet:%s", req.StudentID))
+	}
 
 	respondJSON(w, http.StatusCreated, order)
 }

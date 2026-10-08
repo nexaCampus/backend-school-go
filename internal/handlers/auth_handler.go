@@ -42,6 +42,12 @@ func (h *AuthHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate DOB format YYYY-MM-DD
+	if _, err := time.Parse("2006-01-02", req.DOB); err != nil {
+		respondError(w, http.StatusBadRequest, "Invalid date of birth format, expected YYYY-MM-DD")
+		return
+	}
+
 	query := `
 		SELECT
 			id, student_id, dob, full_name, display_name, grade, section, roll_no,
@@ -103,6 +109,18 @@ func (h *AuthHandler) Verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set HttpOnly cookie for web client security against XSS token exfiltration
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	http.SetCookie(w, &http.Cookie{
+		Name:     "school_auth_token",
+		Value:    accessToken,
+		Path:     "/",
+		Expires:  time.Now().Add(7 * 24 * time.Hour),
+		HttpOnly: true,
+		Secure:   isSecure,
+		SameSite: http.SameSiteStrictMode,
+	})
+
 	respondJSON(w, http.StatusOK, models.StudentVerifyResponse{
 		Token:        accessToken,
 		RefreshToken: refreshToken,
@@ -150,6 +168,18 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "Failed to generate new refresh token")
 		return
 	}
+
+	// Set rotated HttpOnly cookie for web client security
+	isSecure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	http.SetCookie(w, &http.Cookie{
+		Name:     "school_auth_token",
+		Value:    newAccessToken,
+		Path:     "/",
+		Expires:  time.Now().Add(7 * 24 * time.Hour),
+		HttpOnly: true,
+		Secure:   isSecure,
+		SameSite: http.SameSiteStrictMode,
+	})
 
 	respondJSON(w, http.StatusOK, models.RefreshTokenResponse{
 		Token:        newAccessToken,

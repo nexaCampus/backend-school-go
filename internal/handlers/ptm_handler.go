@@ -8,15 +8,23 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type PtmHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewPtmHandler(pool *pgxpool.Pool) *PtmHandler {
-	return &PtmHandler{pool: pool}
+func NewPtmHandler(pool *pgxpool.Pool, c ...cache.Cache) *PtmHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &PtmHandler{pool: pool, cache: cc}
 }
 
 // ListSessions returns upcoming parent-teacher meeting session dates.
@@ -25,6 +33,17 @@ func (h *PtmHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 	grade := strings.TrimSpace(r.URL.Query().Get("grade"))
 	if grade == "" {
 		grade = "12"
+	}
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("ptm:sessions:%s", grade)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedSessions, ok := val.([]models.PtmSession); ok {
+				respondJSON(w, http.StatusOK, cachedSessions)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -49,6 +68,10 @@ func (h *PtmHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.cache != nil {
+		h.cache.Set(cacheKey, sessions, 10*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, sessions)
 }
 
@@ -57,6 +80,17 @@ func (h *PtmHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 func (h *PtmHandler) ListSlots(w http.ResponseWriter, r *http.Request) {
 	teacherID := strings.TrimSpace(r.URL.Query().Get("teacher_id"))
 	date := strings.TrimSpace(r.URL.Query().Get("date"))
+
+	// Check local cache
+	slotsKey := fmt.Sprintf("ptm:slots:%s:%s", teacherID, date)
+	if h.cache != nil {
+		if val, found := h.cache.Get(slotsKey); found && val != nil {
+			if cachedSlots, ok := val.([]models.PtmSlot); ok {
+				respondJSON(w, http.StatusOK, cachedSlots)
+				return
+			}
+		}
+	}
 
 	var query string
 	var args []interface{}
@@ -99,6 +133,10 @@ func (h *PtmHandler) ListSlots(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&s.ID, &s.TeacherID, &s.TeacherName, &s.Date, &s.TimeSlot, &s.IsBooked); err == nil {
 			slots = append(slots, s)
 		}
+	}
+
+	if h.cache != nil {
+		h.cache.Set(slotsKey, slots, 1*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, slots)
@@ -158,6 +196,11 @@ func (h *PtmHandler) BookSlot(w http.ResponseWriter, r *http.Request) {
 
 	// Mark slot as booked
 	_, _ = h.pool.Exec(r.Context(), "UPDATE ptm_slots SET is_booked = true WHERE id = $1;", req.SlotID)
+
+	// Invalidate PTM slots cache
+	if h.cache != nil {
+		h.cache.InvalidatePrefix("ptm:slots:")
+	}
 
 	respondJSON(w, http.StatusCreated, models.PtmBooking{
 		ID:          bookingID,

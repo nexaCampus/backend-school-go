@@ -8,21 +8,41 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
+	"github.com/nexaCampus/backend-school-go/internal/security"
 )
 
 type LostFoundHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewLostFoundHandler(pool *pgxpool.Pool) *LostFoundHandler {
-	return &LostFoundHandler{pool: pool}
+func NewLostFoundHandler(pool *pgxpool.Pool, c ...cache.Cache) *LostFoundHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &LostFoundHandler{pool: pool, cache: cc}
 }
 
 // ListItems returns reported lost and found articles.
 // Route: GET /v1/lost-found/items?status={found|claimed}
 func (h *LostFoundHandler) ListItems(w http.ResponseWriter, r *http.Request) {
 	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("lostfound:items:%s", status)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedItems, ok := val.([]models.LostFoundItem); ok {
+				respondJSON(w, http.StatusOK, cachedItems)
+				return
+			}
+		}
+	}
 
 	var query string
 	var args []interface{}
@@ -58,6 +78,10 @@ func (h *LostFoundHandler) ListItems(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.cache != nil {
+		h.cache.Set(cacheKey, items, 2*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, items)
 }
 
@@ -80,12 +104,26 @@ func (h *LostFoundHandler) ReportItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	itemID := fmt.Sprintf("lf-%d", time.Now().UnixNano())
+	if req.StudentID != "" && !VerifyStudentOwnership(r, req.StudentID) {
+		respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot report lost item for another student")
+		return
+	}
+
+	// Validate image URL for SSRF protection
 	var img *string
 	if strings.TrimSpace(req.ImageURL) != "" {
 		trimmed := strings.TrimSpace(req.ImageURL)
+		if err := security.ValidateSafeURL(trimmed); err != nil {
+			respondError(w, http.StatusBadRequest, "Invalid image_url: "+err.Error())
+			return
+		}
 		img = &trimmed
 	}
+
+	req.ItemName = security.SanitizeText(req.ItemName)
+	req.LastSeenLocation = security.SanitizeText(req.LastSeenLocation)
+
+	itemID := fmt.Sprintf("lf-%d", time.Now().UnixNano())
 
 	query := `
 		INSERT INTO lost_found_items (id, student_id, item_name, last_seen_location, image_url, status, created_at)
@@ -101,6 +139,11 @@ func (h *LostFoundHandler) ReportItem(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "Failed to submit lost item report")
 		return
+	}
+
+	// Invalidate lost & found cache
+	if h.cache != nil {
+		h.cache.InvalidatePrefix("lostfound:")
 	}
 
 	respondJSON(w, http.StatusCreated, it)

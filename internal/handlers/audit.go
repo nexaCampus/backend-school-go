@@ -41,6 +41,11 @@ func (h *AuditStaffHandler) GetSchoolInfo(w http.ResponseWriter, r *http.Request
 // Route 61: POST /api/v1/addStaff
 func (h *AuditStaffHandler) AddStaff(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil || (claims.Role != "admin" && claims.Role != "superadmin") {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.AddStaffRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -61,6 +66,11 @@ func (h *AuditStaffHandler) AddStaff(w http.ResponseWriter, r *http.Request) {
 // Route 62: PUT /api/v1/updateStaff
 func (h *AuditStaffHandler) UpdateStaff(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil || (claims.Role != "admin" && claims.Role != "superadmin") {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.UpdateStaffRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -78,6 +88,11 @@ func (h *AuditStaffHandler) UpdateStaff(w http.ResponseWriter, r *http.Request) 
 // Route 63: DELETE /api/v1/deleteStaff
 func (h *AuditStaffHandler) DeleteStaff(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil || (claims.Role != "admin" && claims.Role != "superadmin") {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	staffID := r.URL.Query().Get("staff_id")
 	if staffID == "" {
 		var body struct {

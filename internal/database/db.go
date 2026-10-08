@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/config"
 )
 
@@ -59,3 +60,36 @@ func InitDB(cfg *config.Config) (*pgxpool.Pool, error) {
 func GetPool() *pgxpool.Pool {
 	return globalPool
 }
+
+// GetOrCompute checks the local memory cache before falling back to a database query.
+// On cache hit, it returns the cached result without querying the database.
+// On cache miss, it computes the value using computeFn, caches it for ttl duration, and returns it.
+func GetOrCompute(key string, ttl time.Duration, computeFn func() (interface{}, error)) (interface{}, error) {
+	c := cache.GetDefaultCache()
+	if c == nil {
+		return computeFn()
+	}
+	return c.GetOrCompute(key, ttl, computeFn)
+}
+
+// InvalidatePrefix evicts all cached database items matching the specified key prefix.
+func InvalidatePrefix(prefix string) {
+	if c := cache.GetDefaultCache(); c != nil {
+		c.InvalidatePrefix(prefix)
+	}
+}
+
+// InvalidateKey evicts a single cached database item.
+func InvalidateKey(key string) {
+	if c := cache.GetDefaultCache(); c != nil {
+		c.Delete(key)
+	}
+}
+
+// WaitCache blocks until all buffered cache writes are committed.
+func WaitCache() {
+	if c := cache.GetDefaultCache(); c != nil {
+		c.Wait()
+	}
+}
+

@@ -1,26 +1,47 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type GalleryHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewGalleryHandler(pool *pgxpool.Pool) *GalleryHandler {
-	return &GalleryHandler{pool: pool}
+func NewGalleryHandler(pool *pgxpool.Pool, c ...cache.Cache) *GalleryHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &GalleryHandler{pool: pool, cache: cc}
 }
 
 // ListAlbums returns event photo albums filtered by academic year.
 // Route: GET /v1/gallery/albums?year={year}
 func (h *GalleryHandler) ListAlbums(w http.ResponseWriter, r *http.Request) {
 	year := strings.TrimSpace(r.URL.Query().Get("year"))
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("gallery:albums:%s", year)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedAlbums, ok := val.([]models.GalleryAlbum); ok {
+				respondJSON(w, http.StatusOK, cachedAlbums)
+				return
+			}
+		}
+	}
 
 	var query string
 	var args []interface{}
@@ -56,6 +77,10 @@ func (h *GalleryHandler) ListAlbums(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.cache != nil {
+		h.cache.Set(cacheKey, albums, 15*time.Minute)
+	}
+
 	respondJSON(w, http.StatusOK, albums)
 }
 
@@ -66,6 +91,17 @@ func (h *GalleryHandler) GetAlbumPhotos(w http.ResponseWriter, r *http.Request) 
 	if albumID == "" {
 		respondError(w, http.StatusBadRequest, "Album ID is required")
 		return
+	}
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("gallery:photos:%s", albumID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedPhotos, ok := val.([]models.GalleryPhoto); ok {
+				respondJSON(w, http.StatusOK, cachedPhotos)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -88,6 +124,10 @@ func (h *GalleryHandler) GetAlbumPhotos(w http.ResponseWriter, r *http.Request) 
 		if err := rows.Scan(&p.ID, &p.AlbumID, &p.URL, &p.Caption); err == nil {
 			photos = append(photos, p)
 		}
+	}
+
+	if h.cache != nil {
+		h.cache.Set(cacheKey, photos, 15*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, photos)

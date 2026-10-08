@@ -38,9 +38,19 @@ func (h *HealthLogisticsHandler) GetBusTravel(w http.ResponseWriter, r *http.Req
 // Route 30: GET /api/v1/canteenWallet
 func (h *HealthLogisticsHandler) GetCanteenWallet(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	bal, err := h.svc.GetCanteenWallet(r.Context(), studentID)
@@ -58,6 +68,11 @@ func (h *HealthLogisticsHandler) GetCanteenWallet(w http.ResponseWriter, r *http
 // Route 31: POST /api/v1/canteenWallet/recharge
 func (h *HealthLogisticsHandler) RechargeCanteenWallet(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var body struct {
 		StudentID string  `json:"student_id"`
 		Amount    float64 `json:"amount"`
@@ -68,6 +83,11 @@ func (h *HealthLogisticsHandler) RechargeCanteenWallet(w http.ResponseWriter, r 
 	}
 	if body.StudentID == "" {
 		body.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(body.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	newBal, refNo, err := h.svc.RechargeCanteenWallet(r.Context(), body.StudentID, body.Amount, claims.UserID, claims.Role, r.RemoteAddr)
@@ -84,9 +104,19 @@ func (h *HealthLogisticsHandler) RechargeCanteenWallet(w http.ResponseWriter, r 
 // Route 32: GET /api/v1/canteenFoodOrdered
 func (h *HealthLogisticsHandler) GetCanteenOrders(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.GetCanteenOrders(r.Context(), studentID)
@@ -100,6 +130,11 @@ func (h *HealthLogisticsHandler) GetCanteenOrders(w http.ResponseWriter, r *http
 // Route 33: POST /api/v1/canteenFoodOrdered
 func (h *HealthLogisticsHandler) CreateCanteenOrder(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.CanteenOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -107,6 +142,11 @@ func (h *HealthLogisticsHandler) CreateCanteenOrder(w http.ResponseWriter, r *ht
 	}
 	if req.StudentID == "" {
 		req.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(req.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	order, refNo, err := h.svc.CreateCanteenOrder(r.Context(), &req, claims.UserID, claims.Role, r.RemoteAddr)
@@ -120,9 +160,19 @@ func (h *HealthLogisticsHandler) CreateCanteenOrder(w http.ResponseWriter, r *ht
 // Route 34: GET /api/v1/hallPass
 func (h *HealthLogisticsHandler) GetHallPass(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.GetHallPass(r.Context(), studentID)
@@ -136,9 +186,22 @@ func (h *HealthLogisticsHandler) GetHallPass(w http.ResponseWriter, r *http.Requ
 // Route 35: POST /api/v1/hallPass
 func (h *HealthLogisticsHandler) IssueHallPass(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.IssueHallPassRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
+		return
+	}
+	if req.StudentID == "" {
+		req.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(req.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
 		return
 	}
 
@@ -153,9 +216,19 @@ func (h *HealthLogisticsHandler) IssueHallPass(w http.ResponseWriter, r *http.Re
 // Route 36: GET /api/v1/health & /api/v1/studentHealthInfo
 func (h *HealthLogisticsHandler) GetHealthRecords(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.GetHealthRecords(r.Context(), studentID)
@@ -169,9 +242,22 @@ func (h *HealthLogisticsHandler) GetHealthRecords(w http.ResponseWriter, r *http
 // Route 37: POST /api/v1/health
 func (h *HealthLogisticsHandler) UpdateHealthRecords(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.UpdateHealthRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
+		return
+	}
+	if req.StudentID == "" {
+		req.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(req.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
 		return
 	}
 
@@ -196,9 +282,19 @@ func (h *HealthLogisticsHandler) GetStoreProducts(w http.ResponseWriter, r *http
 // Route 39: GET & POST /api/v1/schoolStoreCart
 func (h *HealthLogisticsHandler) GetStoreCart(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.GetStoreCart(r.Context(), studentID)
@@ -211,6 +307,11 @@ func (h *HealthLogisticsHandler) GetStoreCart(w http.ResponseWriter, r *http.Req
 
 func (h *HealthLogisticsHandler) UpdateStoreCart(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.UpdateStoreCartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -218,6 +319,11 @@ func (h *HealthLogisticsHandler) UpdateStoreCart(w http.ResponseWriter, r *http.
 	}
 	if req.StudentID == "" {
 		req.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(req.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	refNo, err := h.svc.UpdateStoreCart(r.Context(), &req, claims.UserID, claims.Role, r.RemoteAddr)
@@ -231,12 +337,22 @@ func (h *HealthLogisticsHandler) UpdateStoreCart(w http.ResponseWriter, r *http.
 // Route 40: POST /api/v1/schoolStoreAddOrder
 func (h *HealthLogisticsHandler) CreateStoreOrder(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var body struct {
 		StudentID string `json:"student_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body.StudentID == "" {
 		body.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(body.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	order, refNo, err := h.svc.CreateStoreOrder(r.Context(), body.StudentID, claims.UserID, claims.Role, r.RemoteAddr)
@@ -250,6 +366,11 @@ func (h *HealthLogisticsHandler) CreateStoreOrder(w http.ResponseWriter, r *http
 // Route 41: POST /api/v1/schoolStoreOnlinePayments
 func (h *HealthLogisticsHandler) StoreOnlinePayments(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var body struct {
 		StudentID string  `json:"student_id"`
 		Amount    float64 `json:"amount"`
@@ -260,6 +381,11 @@ func (h *HealthLogisticsHandler) StoreOnlinePayments(w http.ResponseWriter, r *h
 	}
 	if body.StudentID == "" {
 		body.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(body.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	order, refNo, err := h.svc.StoreOnlinePayments(r.Context(), body.StudentID, body.Amount, claims.UserID, claims.Role, r.RemoteAddr)
@@ -273,10 +399,20 @@ func (h *HealthLogisticsHandler) StoreOnlinePayments(w http.ResponseWriter, r *h
 // Route 42: GET /api/v1/library
 func (h *HealthLogisticsHandler) SearchLibrary(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	query := r.URL.Query().Get("query")
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.SearchLibrary(r.Context(), query, studentID)

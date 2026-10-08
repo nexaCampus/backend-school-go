@@ -3,21 +3,31 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type TransportHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewTransportHandler(pool *pgxpool.Pool) *TransportHandler {
-	return &TransportHandler{pool: pool}
+func NewTransportHandler(pool *pgxpool.Pool, c ...cache.Cache) *TransportHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &TransportHandler{pool: pool, cache: cc}
 }
 
 // GetRouteDetails fetches school bus details, scheduled stops, driver contact, and GPS coordinates.
@@ -32,6 +42,17 @@ func (h *TransportHandler) GetRouteDetails(w http.ResponseWriter, r *http.Reques
 
 	cleanRoute := strings.TrimPrefix(strings.ToLower(routeParam), "route-")
 	cleanRoute = strings.TrimPrefix(cleanRoute, "r-")
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("transport:route:%s", cleanRoute)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedRoute, ok := val.(models.TransportRoute); ok {
+				respondJSON(w, http.StatusOK, cachedRoute)
+				return
+			}
+		}
+	}
 
 	query := `
 		SELECT route_number, bus_number, driver_name, driver_phone, current_lat, current_lng, status, stops
@@ -59,6 +80,11 @@ func (h *TransportHandler) GetRouteDetails(w http.ResponseWriter, r *http.Reques
 	route.Stops = make([]models.TransportStop, 0)
 	if len(stopsJSON) > 0 {
 		_ = json.Unmarshal(stopsJSON, &route.Stops)
+	}
+
+	// Cache transport details for 1 minute (dynamic bus location)
+	if h.cache != nil {
+		h.cache.Set(cacheKey, route, 1*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, route)
@@ -114,6 +140,12 @@ func (h *TransportHandler) UpdateLocation(w http.ResponseWriter, r *http.Request
 	route.Stops = make([]models.TransportStop, 0)
 	if len(stopsJSON) > 0 {
 		_ = json.Unmarshal(stopsJSON, &route.Stops)
+	}
+
+	// Invalidate and update local cache for route
+	if h.cache != nil {
+		cacheKey := fmt.Sprintf("transport:route:%s", cleanRoute)
+		h.cache.Set(cacheKey, route, 1*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, map[string]interface{}{

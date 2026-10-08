@@ -10,15 +10,23 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type HallPassHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewHallPassHandler(pool *pgxpool.Pool) *HallPassHandler {
-	return &HallPassHandler{pool: pool}
+func NewHallPassHandler(pool *pgxpool.Pool, c ...cache.Cache) *HallPassHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &HallPassHandler{pool: pool, cache: cc}
 }
 
 // RequestPass submits a temporary hall pass request to the period teacher.
@@ -71,6 +79,11 @@ func (h *HallPassHandler) RequestPass(w http.ResponseWriter, r *http.Request) {
 
 	hp.RemainingSeconds = int(time.Until(expiresAt).Seconds())
 
+	// Invalidate active pass cache for student
+	if h.cache != nil {
+		h.cache.Delete(fmt.Sprintf("hallpass:active:%s", req.StudentID))
+	}
+
 	respondJSON(w, http.StatusCreated, hp)
 }
 
@@ -81,6 +94,17 @@ func (h *HallPassHandler) GetActivePass(w http.ResponseWriter, r *http.Request) 
 	if studentID == "" {
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
+	}
+
+	// Check local cache
+	passKey := fmt.Sprintf("hallpass:active:%s", studentID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(passKey); found && val != nil {
+			if cachedMap, ok := val.(map[string]interface{}); ok {
+				respondJSON(w, http.StatusOK, cachedMap)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -100,10 +124,14 @@ func (h *HallPassHandler) GetActivePass(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// No active pass
-			respondJSON(w, http.StatusOK, map[string]interface{}{
+			res := map[string]interface{}{
 				"active":  false,
 				"message": "No active hall pass at this time",
-			})
+			}
+			if h.cache != nil {
+				h.cache.Set(passKey, res, 15*time.Second)
+			}
+			respondJSON(w, http.StatusOK, res)
 			return
 		}
 		respondError(w, http.StatusInternalServerError, "Failed to query active hall pass")
@@ -116,8 +144,14 @@ func (h *HallPassHandler) GetActivePass(w http.ResponseWriter, r *http.Request) 
 		hp.Status = "EXPIRED"
 	}
 
-	respondJSON(w, http.StatusOK, map[string]interface{}{
+	res := map[string]interface{}{
 		"active": true,
 		"pass":   hp,
-	})
+	}
+
+	if h.cache != nil {
+		h.cache.Set(passKey, res, 15*time.Second)
+	}
+
+	respondJSON(w, http.StatusOK, res)
 }

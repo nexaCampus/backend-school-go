@@ -3,20 +3,30 @@ package handlers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type AcademicsHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewAcademicsHandler(pool *pgxpool.Pool) *AcademicsHandler {
-	return &AcademicsHandler{pool: pool}
+func NewAcademicsHandler(pool *pgxpool.Pool, c ...cache.Cache) *AcademicsHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &AcademicsHandler{pool: pool, cache: cc}
 }
 
 // GetReportCard retrieves subject marks, GPA, teacher remarks, and marksheet PDF download URL.
@@ -31,6 +41,17 @@ func (h *AcademicsHandler) GetReportCard(w http.ResponseWriter, r *http.Request)
 	term := strings.TrimSpace(r.URL.Query().Get("term"))
 	if term == "" {
 		term = "Term 1"
+	}
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("academics:reportcard:%s:%s", studentID, strings.ToLower(term))
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedCard, ok := val.(models.ReportCard); ok {
+				respondJSON(w, http.StatusOK, cachedCard)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -78,6 +99,9 @@ func (h *AcademicsHandler) GetReportCard(w http.ResponseWriter, r *http.Request)
 					{Subject: "English Core", Score: 88, Total: 100, Grade: "A", Remarks: "Very Good"},
 				},
 			}
+			if h.cache != nil {
+				h.cache.Set(cacheKey, fallback, 10*time.Minute)
+			}
 			respondJSON(w, http.StatusOK, fallback)
 			return
 		}
@@ -88,6 +112,10 @@ func (h *AcademicsHandler) GetReportCard(w http.ResponseWriter, r *http.Request)
 	rep.Subjects = make([]models.SubjectGrade, 0)
 	if len(subjectsJSON) > 0 {
 		_ = json.Unmarshal(subjectsJSON, &rep.Subjects)
+	}
+
+	if h.cache != nil {
+		h.cache.Set(cacheKey, rep, 10*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, rep)

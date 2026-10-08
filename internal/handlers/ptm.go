@@ -23,9 +23,19 @@ func NewPtmAPIHandler(svc *services.Service) *PtmAPIHandler {
 // Route 51: GET /api/v1/parentDesk & /api/v1/parentRecentThreads
 func (h *PtmAPIHandler) GetParentThreads(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.GetParentThreads(r.Context(), studentID)
@@ -39,6 +49,11 @@ func (h *PtmAPIHandler) GetParentThreads(w http.ResponseWriter, r *http.Request)
 // Route 52: POST /api/v1/parentDesk
 func (h *PtmAPIHandler) PostParentMessage(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.PostParentDeskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -46,6 +61,11 @@ func (h *PtmAPIHandler) PostParentMessage(w http.ResponseWriter, r *http.Request
 	}
 	if req.StudentID == "" {
 		req.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(req.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	refNo, err := h.svc.PostParentMessage(r.Context(), &req, claims.UserID, claims.Role, r.RemoteAddr)
@@ -80,6 +100,11 @@ func (h *PtmAPIHandler) SearchPTMTeachers(w http.ResponseWriter, r *http.Request
 // Route 54: POST /api/v1/ptmQuickBook
 func (h *PtmAPIHandler) BookPTMSlot(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.PtmQuickBookReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -87,6 +112,11 @@ func (h *PtmAPIHandler) BookPTMSlot(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.StudentID == "" {
 		req.StudentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(req.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	res, refNo, err := h.svc.BookPTMSlot(r.Context(), &req, claims.UserID, claims.Role, r.RemoteAddr)
@@ -100,6 +130,11 @@ func (h *PtmAPIHandler) BookPTMSlot(w http.ResponseWriter, r *http.Request) {
 // Route 55: PUT /api/v1/reschedulePtmTimings
 func (h *PtmAPIHandler) ReschedulePTMSlot(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.ReschedulePtmReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -117,6 +152,11 @@ func (h *PtmAPIHandler) ReschedulePTMSlot(w http.ResponseWriter, r *http.Request
 // Route 56: POST /api/v1/addToCalender
 func (h *PtmAPIHandler) AddToCalendar(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var req models.AddCalendarEventRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -137,6 +177,16 @@ func (h *PtmAPIHandler) AddToCalendar(w http.ResponseWriter, r *http.Request) {
 // Route 57: POST /api/v1/noticeMessageUrgentBroadcast
 func (h *PtmAPIHandler) UrgentNoticeBroadcast(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.UrgentNoticeBroadcastRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -158,6 +208,16 @@ func (h *PtmAPIHandler) UrgentNoticeBroadcast(w http.ResponseWriter, r *http.Req
 // Route 58: POST /api/v1/postNotice
 func (h *PtmAPIHandler) PostNotice(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.PostNoticeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))

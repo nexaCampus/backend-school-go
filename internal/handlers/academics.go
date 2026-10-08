@@ -7,6 +7,7 @@ import (
 	"github.com/nexaCampus/backend-school-go/internal/audit"
 	"github.com/nexaCampus/backend-school-go/internal/middleware"
 	"github.com/nexaCampus/backend-school-go/internal/models"
+	"github.com/nexaCampus/backend-school-go/internal/security"
 	"github.com/nexaCampus/backend-school-go/internal/services"
 )
 
@@ -24,11 +25,11 @@ func NewAcademicsAPIHandler(svc *services.Service) *AcademicsAPIHandler {
 func (h *AcademicsAPIHandler) GetTimeTable(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
 	classID := r.URL.Query().Get("class_id")
-	if classID == "" {
+	if classID == "" && claims != nil {
 		classID = claims.ClassID
 	}
 	sectionID := r.URL.Query().Get("section_id")
-	if sectionID == "" {
+	if sectionID == "" && claims != nil {
 		sectionID = claims.SectionID
 	}
 	if classID == "" {
@@ -49,6 +50,16 @@ func (h *AcademicsAPIHandler) GetTimeTable(w http.ResponseWriter, r *http.Reques
 // Route 5: PUT /api/v1/updateTimeTable
 func (h *AcademicsAPIHandler) UpdateTimeTable(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.UpdateTimeTableRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -67,7 +78,7 @@ func (h *AcademicsAPIHandler) UpdateTimeTable(w http.ResponseWriter, r *http.Req
 func (h *AcademicsAPIHandler) GetLabTimeTable(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
 	classID := r.URL.Query().Get("class_id")
-	if classID == "" {
+	if classID == "" && claims != nil {
 		classID = claims.ClassID
 	}
 	if classID == "" {
@@ -86,7 +97,7 @@ func (h *AcademicsAPIHandler) GetLabTimeTable(w http.ResponseWriter, r *http.Req
 func (h *AcademicsAPIHandler) GetSyllabus(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
 	classID := r.URL.Query().Get("class_id")
-	if classID == "" {
+	if classID == "" && claims != nil {
 		classID = claims.ClassID
 	}
 	if classID == "" {
@@ -104,6 +115,11 @@ func (h *AcademicsAPIHandler) GetSyllabus(w http.ResponseWriter, r *http.Request
 // Route 8: GET /api/v1/dairy
 func (h *AcademicsAPIHandler) GetDiary(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	classID := r.URL.Query().Get("class_id")
 	if classID == "" {
 		classID = claims.ClassID
@@ -123,6 +139,11 @@ func (h *AcademicsAPIHandler) GetDiary(w http.ResponseWriter, r *http.Request) {
 		sectionID = "A"
 	}
 
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
+	}
+
 	data, err := h.svc.GetDiary(r.Context(), classID, sectionID, studentID)
 	if err != nil {
 		audit.WriteJSON(w, http.StatusInternalServerError, audit.ErrorResponse(err.Error()))
@@ -134,11 +155,24 @@ func (h *AcademicsAPIHandler) GetDiary(w http.ResponseWriter, r *http.Request) {
 // Route 9: POST /api/v1/dairy
 func (h *AcademicsAPIHandler) AddDiary(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.PostDiaryRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
 		return
 	}
+
+	req.Remark = security.SanitizeText(req.Remark)
+	req.Conduct = security.SanitizeText(req.Conduct)
 
 	refNo, err := h.svc.AddDiary(r.Context(), &req, "Dr. R. Iyer", claims.UserID, claims.Role, r.RemoteAddr)
 	if err != nil {
@@ -152,11 +186,11 @@ func (h *AcademicsAPIHandler) AddDiary(w http.ResponseWriter, r *http.Request) {
 func (h *AcademicsAPIHandler) GetHomework(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
 	classID := r.URL.Query().Get("class_id")
-	if classID == "" {
+	if classID == "" && claims != nil {
 		classID = claims.ClassID
 	}
 	sectionID := r.URL.Query().Get("section_id")
-	if sectionID == "" {
+	if sectionID == "" && claims != nil {
 		sectionID = claims.SectionID
 	}
 	if classID == "" {
@@ -177,11 +211,24 @@ func (h *AcademicsAPIHandler) GetHomework(w http.ResponseWriter, r *http.Request
 // Route 11: POST /api/v1/homework
 func (h *AcademicsAPIHandler) PostHomework(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.PostHomeworkRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
 		return
 	}
+
+	req.Title = security.SanitizeText(req.Title)
+	req.Description = security.SanitizeText(req.Description)
 
 	refNo, err := h.svc.PostHomework(r.Context(), &req, "Dr. K. Rao", claims.UserID, claims.Role, r.RemoteAddr)
 	if err != nil {
@@ -194,6 +241,11 @@ func (h *AcademicsAPIHandler) PostHomework(w http.ResponseWriter, r *http.Reques
 // Route 12: POST /api/v1/homework/submit
 func (h *AcademicsAPIHandler) SubmitHomework(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	var body struct {
 		HomeworkID string `json:"homework_id"`
 		StudentID  string `json:"student_id"`
@@ -207,6 +259,18 @@ func (h *AcademicsAPIHandler) SubmitHomework(w http.ResponseWriter, r *http.Requ
 		body.StudentID = claims.UserID
 	}
 
+	if !claims.HasStudentAccess(body.StudentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
+	}
+
+	if body.FileURL != "" {
+		if err := security.ValidateSafeURL(body.FileURL); err != nil {
+			audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_file_url: "+err.Error()))
+			return
+		}
+	}
+
 	refNo, err := h.svc.SubmitHomework(r.Context(), body.HomeworkID, body.StudentID, body.FileURL, r.RemoteAddr)
 	if err != nil {
 		audit.WriteJSON(w, http.StatusInternalServerError, audit.ErrorResponse(err.Error()))
@@ -218,6 +282,16 @@ func (h *AcademicsAPIHandler) SubmitHomework(w http.ResponseWriter, r *http.Requ
 // Route 18: POST /api/v1/setExamDates
 func (h *AcademicsAPIHandler) SetExamDates(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.SetExamDatesRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -236,7 +310,7 @@ func (h *AcademicsAPIHandler) SetExamDates(w http.ResponseWriter, r *http.Reques
 func (h *AcademicsAPIHandler) GetExamDates(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
 	classID := r.URL.Query().Get("class_id")
-	if classID == "" {
+	if classID == "" && claims != nil {
 		classID = claims.ClassID
 	}
 	if classID == "" {
@@ -255,7 +329,7 @@ func (h *AcademicsAPIHandler) GetExamDates(w http.ResponseWriter, r *http.Reques
 func (h *AcademicsAPIHandler) GetExamTimeTable(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
 	classID := r.URL.Query().Get("class_id")
-	if classID == "" {
+	if classID == "" && claims != nil {
 		classID = claims.ClassID
 	}
 	if classID == "" {
@@ -270,12 +344,20 @@ func (h *AcademicsAPIHandler) GetExamTimeTable(w http.ResponseWriter, r *http.Re
 	audit.WriteJSON(w, http.StatusOK, audit.SuccessResponse("", data))
 }
 
-// Route 21: GET /api/v1/exam
+// Route 21: GET /api/v1/exam (Guidelines)
 func (h *AcademicsAPIHandler) GetExamGuidelines(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
 	studentID := r.URL.Query().Get("student_id")
-	if studentID == "" {
+	if studentID == "" && claims != nil {
 		studentID = claims.UserID
+	}
+	if studentID == "" {
+		studentID = "STU1001"
+	}
+
+	if claims != nil && !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.GetExamGuidelines(r.Context(), studentID)
@@ -289,9 +371,19 @@ func (h *AcademicsAPIHandler) GetExamGuidelines(w http.ResponseWriter, r *http.R
 // Route 22: GET /api/v1/results
 func (h *AcademicsAPIHandler) GetResults(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.GetResults(r.Context(), studentID)
@@ -305,6 +397,16 @@ func (h *AcademicsAPIHandler) GetResults(w http.ResponseWriter, r *http.Request)
 // Route 23: POST /api/v1/results
 func (h *AcademicsAPIHandler) BatchSaveResults(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
+	if claims.Role != "admin" && claims.Role != "superadmin" && claims.Role != "teacher" {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_insufficient_permissions"))
+		return
+	}
+
 	var req models.BatchSaveResultsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		audit.WriteJSON(w, http.StatusBadRequest, audit.ErrorResponse("invalid_request_payload"))
@@ -322,9 +424,19 @@ func (h *AcademicsAPIHandler) BatchSaveResults(w http.ResponseWriter, r *http.Re
 // Route 24: GET /api/v1/reportCard
 func (h *AcademicsAPIHandler) GetReportCard(w http.ResponseWriter, r *http.Request) {
 	claims := middleware.GetUserClaims(r.Context())
+	if claims == nil {
+		audit.WriteJSON(w, http.StatusUnauthorized, audit.ErrorResponse("unauthorized"))
+		return
+	}
+
 	studentID := r.URL.Query().Get("student_id")
 	if studentID == "" {
 		studentID = claims.UserID
+	}
+
+	if !claims.HasStudentAccess(studentID) {
+		audit.WriteJSON(w, http.StatusForbidden, audit.ErrorResponse("forbidden_student_idor_violation"))
+		return
 	}
 
 	data, err := h.svc.GetReportCard(r.Context(), studentID)

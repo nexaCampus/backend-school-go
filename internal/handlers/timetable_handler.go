@@ -1,20 +1,30 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type TimetableHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewTimetableHandler(pool *pgxpool.Pool) *TimetableHandler {
-	return &TimetableHandler{pool: pool}
+func NewTimetableHandler(pool *pgxpool.Pool, c ...cache.Cache) *TimetableHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &TimetableHandler{pool: pool, cache: cc}
 }
 
 // GetTimetable returns bell schedule and period timeline filtered by grade, section, and day of week.
@@ -29,6 +39,17 @@ func (h *TimetableHandler) GetTimetable(w http.ResponseWriter, r *http.Request) 
 	}
 	if section == "" {
 		section = "E"
+	}
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("timetable:%s:%s:%s", grade, section, dayStr)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedSlots, ok := val.([]models.TimetableSlot); ok {
+				respondJSON(w, http.StatusOK, cachedSlots)
+				return
+			}
+		}
 	}
 
 	var query string
@@ -74,6 +95,11 @@ func (h *TimetableHandler) GetTimetable(w http.ResponseWriter, r *http.Request) 
 		); err == nil {
 			slots = append(slots, slot)
 		}
+	}
+
+	// Cache timetable slots for 15 minutes
+	if h.cache != nil {
+		h.cache.Set(cacheKey, slots, 15*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, slots)

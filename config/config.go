@@ -2,6 +2,7 @@ package config
 
 import (
 	"bufio"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -57,6 +58,16 @@ func Load() *Config {
 	memLimitMB, _ := strconv.ParseInt(getEnv("MEM_LIMIT_MB", "700"), 10, 64)
 	if memLimitMB <= 0 {
 		memLimitMB = 700
+	}
+
+	isProduction := getEnv("ENV", "") == "production" ||
+		getEnv("ENVIRONMENT", "") == "production" ||
+		getEnv("RENDER", "") == "true"
+
+	if isProduction {
+		if jwtSecret == "super_secret_school_jwt_key_2026_stitch" || len(jwtSecret) < 32 {
+			log.Fatalf("[FATAL] Insecure configuration: JWT_SECRET must be configured with a random secure secret of at least 32 characters in production mode!")
+		}
 	}
 
 	return &Config{

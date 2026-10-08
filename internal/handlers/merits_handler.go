@@ -1,19 +1,28 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/models"
 )
 
 type MeritsHandler struct {
-	pool *pgxpool.Pool
+	pool  *pgxpool.Pool
+	cache cache.Cache
 }
 
-func NewMeritsHandler(pool *pgxpool.Pool) *MeritsHandler {
-	return &MeritsHandler{pool: pool}
+func NewMeritsHandler(pool *pgxpool.Pool, c ...cache.Cache) *MeritsHandler {
+	var cc cache.Cache
+	if len(c) > 0 && c[0] != nil {
+		cc = c[0]
+	} else {
+		cc = cache.GetDefaultCache()
+	}
+	return &MeritsHandler{pool: pool, cache: cc}
 }
 
 // GetSummary returns house standings, personal merit points, and house leaderboard.
@@ -21,8 +30,23 @@ func NewMeritsHandler(pool *pgxpool.Pool) *MeritsHandler {
 func (h *MeritsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's merit summary")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
+	}
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("merits:summary:%s", studentID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedSummary, ok := val.(models.MeritSummary); ok {
+				respondJSON(w, http.StatusOK, cachedSummary)
+				return
+			}
+		}
 	}
 
 	// 1. Fetch student's house affiliation & individual points
@@ -68,13 +92,19 @@ func (h *MeritsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respondJSON(w, http.StatusOK, models.MeritSummary{
+	summary := models.MeritSummary{
 		StudentID:        studentID,
 		HouseName:        houseName,
 		HouseColor:       houseColor,
 		IndividualPoints: indPoints,
 		Leaderboard:      leaderboard,
-	})
+	}
+
+	if h.cache != nil {
+		h.cache.Set(cacheKey, summary, 5*time.Minute)
+	}
+
+	respondJSON(w, http.StatusOK, summary)
 }
 
 // GetRecords retrieves student commendations and disciplinary notices.
@@ -82,8 +112,23 @@ func (h *MeritsHandler) GetSummary(w http.ResponseWriter, r *http.Request) {
 func (h *MeritsHandler) GetRecords(w http.ResponseWriter, r *http.Request) {
 	studentID := resolveStudentID(r)
 	if studentID == "" {
+		if r.URL.Query().Get("student_id") != "" {
+			respondError(w, http.StatusForbidden, "Forbidden: IDOR violation - cannot access another student's merit records")
+			return
+		}
 		respondError(w, http.StatusBadRequest, "student_id is required")
 		return
+	}
+
+	// 1. Check local cache before database query (Cache Hit)
+	cacheKey := fmt.Sprintf("merits:records:%s", studentID)
+	if h.cache != nil {
+		if val, found := h.cache.Get(cacheKey); found && val != nil {
+			if cachedRecords, ok := val.([]models.MeritRecord); ok {
+				respondJSON(w, http.StatusOK, cachedRecords)
+				return
+			}
+		}
 	}
 
 	query := `
@@ -108,6 +153,10 @@ func (h *MeritsHandler) GetRecords(w http.ResponseWriter, r *http.Request) {
 			rec.Date = d.Format("02 Jan 2006")
 			records = append(records, rec)
 		}
+	}
+
+	if h.cache != nil {
+		h.cache.Set(cacheKey, records, 5*time.Minute)
 	}
 
 	respondJSON(w, http.StatusOK, records)

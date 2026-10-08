@@ -104,6 +104,7 @@ func (c *RistrettoCache) GetOrCompute(key string, ttl time.Duration, computeFn f
 
 		if data != nil {
 			c.Set(key, data, ttl)
+			c.Wait()
 		}
 		return data, nil
 	})
@@ -112,6 +113,13 @@ func (c *RistrettoCache) GetOrCompute(key string, ttl time.Duration, computeFn f
 		return nil, err
 	}
 	return v, nil
+}
+
+// Wait blocks until all buffered writes have been applied.
+func (c *RistrettoCache) Wait() {
+	if c.cache != nil {
+		c.cache.Wait()
+	}
 }
 
 // Len returns approximate count of active tracked keys.
