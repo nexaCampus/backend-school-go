@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,7 +24,8 @@ func InitDB(cfg *config.Config) (*pgxpool.Pool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	poolConfig, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	cleanedURL := CleanDatabaseURL(cfg.DatabaseURL)
+	poolConfig, err := pgxpool.ParseConfig(cleanedURL)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse DATABASE_URL: %w", err)
 	}
@@ -92,4 +95,55 @@ func WaitCache() {
 		c.Wait()
 	}
 }
+
+// CleanDatabaseURL sanitizes common formatting errors in connection strings,
+// such as unescaped special characters in passwords or accidental square brackets.
+func CleanDatabaseURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "postgres://") && !strings.HasPrefix(raw, "postgresql://") {
+		return raw
+	}
+
+	if _, err := pgxpool.ParseConfig(raw); err == nil {
+		return raw
+	}
+
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd == -1 {
+		return raw
+	}
+	scheme := raw[:schemeEnd]
+	afterScheme := raw[schemeEnd+3:]
+
+	lastAt := strings.LastIndex(afterScheme, "@")
+	if lastAt == -1 {
+		return raw
+	}
+
+	userInfo := afterScheme[:lastAt]
+	hostAndRest := afterScheme[lastAt+1:]
+
+	colonIdx := strings.Index(userInfo, ":")
+	if colonIdx == -1 {
+		return raw
+	}
+
+	user := userInfo[:colonIdx]
+	pass := userInfo[colonIdx+1:]
+
+	// Strip literal brackets if user accidentally kept [YOUR_PASSWORD]
+	pass = strings.TrimPrefix(pass, "[")
+	pass = strings.TrimSuffix(pass, "]")
+
+	// Percent-encode password for URL compliance
+	escapedPass := url.QueryEscape(pass)
+
+	fixed := fmt.Sprintf("%s://%s:%s@%s", scheme, user, escapedPass, hostAndRest)
+	if _, err := pgxpool.ParseConfig(fixed); err == nil {
+		return fixed
+	}
+
+	return raw
+}
+
 

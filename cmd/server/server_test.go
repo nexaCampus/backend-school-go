@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nexaCampus/backend-school-go/internal/cache"
 	"github.com/nexaCampus/backend-school-go/internal/database"
 	"github.com/nexaCampus/backend-school-go/internal/models"
@@ -187,4 +189,17 @@ func TestLocalCachePrefixInvalidation(t *testing.T) {
 		t.Errorf("expected notice:list:all:10 to remain in cache")
 	}
 }
+
+func TestCleanDatabaseURL(t *testing.T) {
+	// Case 1: Password enclosed in accidental brackets [password] (triggers net/url: invalid userinfo)
+	rawWithBrackets := "postgresql://postgres.proj:[MyPassword123]@aws-0-ap-south-1.pooler.supabase.com:6543/postgres?sslmode=require"
+	cleaned1 := database.CleanDatabaseURL(rawWithBrackets)
+	if strings.Contains(cleaned1, "[") || strings.Contains(cleaned1, "]") {
+		t.Errorf("expected brackets to be stripped, got %s", cleaned1)
+	}
+	if _, err := pgxpool.ParseConfig(cleaned1); err != nil {
+		t.Errorf("expected cleaned URL to parse cleanly with pgxpool, got err: %v", err)
+	}
+}
+
 
